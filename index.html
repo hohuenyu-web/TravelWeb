@@ -91,6 +91,7 @@
         .weather-card { background: linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%); border-radius: 20px; padding: 20px; color: white; display: flex; justify-content: space-between; align-items: center; margin: 20px; cursor: pointer; box-shadow: var(--shadow); }
         .weather-left { display: flex; align-items: center; gap: 15px; }
         .weather-temp { font-size: 1.1rem; font-weight: 700; }
+        .weather-desc { font-size: 0.85rem; opacity: 0.95; margin-top: 2px; }
         .flight-card-v2 { background: linear-gradient(135deg, #5b7fff 0%, #3366ff 100%); border-radius: 24px; padding: 20px; color: white; margin: 20px; position: relative; box-shadow: var(--shadow); }
         .fc-top { display: flex; justify-content: space-between; margin-bottom: 20px; }
         .fc-tag { background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 8px; font-size: 0.75rem; font-weight: 700; letter-spacing: 1px; }
@@ -121,6 +122,18 @@
         .split-summary-card { background: linear-gradient(135deg, #FF9966 0%, #FF5E62 100%); border-radius: 20px; padding: 25px; color: white; box-shadow: 0 10px 25px rgba(255, 94, 98, 0.3); margin-bottom: 25px; text-align: center; }
         .split-total-amount { font-size: 2.5rem; font-weight: 700; margin: 10px 0; }
         .split-avg-label { background: rgba(255, 255, 255, 0.2); padding: 5px 15px; border-radius: 20px; font-size: 0.9rem; display: inline-block; }
+        .split-members-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px 0; }
+        .split-member-chip { background: white; border: 1px solid #eee; border-radius: 20px; padding: 6px 12px; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }
+        .split-member-add { background: #f7f4ea; color: var(--primary); border: 1px dashed #d4af37; cursor: pointer; font-family: inherit; }
+        .person-balance-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 0.9rem; }
+        .person-balance-table th { text-align: left; color: #888; font-weight: 500; padding: 6px 4px; font-size: 0.78rem; }
+        .person-balance-table td { padding: 8px 4px; border-top: 1px solid #f0f0f0; vertical-align: middle; }
+        .balance-pos { color: #27ae60; font-weight: 700; }
+        .balance-neg { color: #e74c3c; font-weight: 700; }
+        .balance-zero { color: #888; }
+        .participant-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 14px; }
+        .participant-item { display: flex; align-items: center; gap: 6px; background: #f7f7f7; border-radius: 20px; padding: 6px 12px; font-size: 0.9rem; cursor: pointer; }
+        .participant-item input { accent-color: var(--primary); }
         .split-item { background: var(--card-bg); border-radius: 16px; padding: 15px 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
         .split-item-left h4 { margin: 0; font-size: 1rem; color: #333; }
         .split-item-left span { font-size: 0.8rem; color: #888; display: flex; align-items: center; gap: 5px; margin-top: 3px; }
@@ -194,6 +207,10 @@
                 <div class="form-section">
                     <div class="section-title">標題</div>
                     <input type="text" id="input-title" class="input-floating" placeholder="例如：日本京都">
+                </div>
+                <div class="form-section">
+                    <div class="section-title">目的地（選填，用於自動連結天氣）</div>
+                    <input type="text" id="input-destination" class="input-floating" placeholder="例如：曼谷 / Bangkok">
                 </div>
                 <div class="date-row">
                     <input type="date" id="input-start" class="input-floating">
@@ -331,8 +348,10 @@
                 <div class="modal-header"><h2 id="split-modal-title">新增分帳項目</h2></div>
                 <input type="hidden" id="split-id">
                 <input type="text" id="split-name" class="input-floating" placeholder="項目">
-                <input type="text" id="split-payer" class="input-floating" placeholder="付款人">
+                <input type="text" id="split-payer" class="input-floating" placeholder="付款人" oninput="window.app.refreshSplitParticipants()">
                 <input type="number" id="split-amount" class="input-floating" placeholder="金額 (HKD)">
+                <div class="section-title">誰一起分</div>
+                <div id="split-participants" class="participant-list"></div>
             </div>
             <div class="creator-actions">
                 <button class="btn-cancel" onclick="window.app.closeSplitModal()">取消</button>
@@ -446,6 +465,7 @@
             </div>
             <div id="tab-split" class="tab-content" style="padding: 20px;">
                 <div class="budget-overview" style="margin-bottom:20px;"><h3>分帳結算 (HKD)</h3><div id="split-summary-area" style="margin-top:10px;"></div></div>
+                <div class="split-members-bar" id="split-members-bar"></div>
                 <div class="split-list" id="split-list"></div>
                 <div class="fab-add" onclick="window.app.openAddSplitModal()"><i class="fas fa-plus"></i></div>
             </div>
@@ -566,6 +586,205 @@
         return String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     }
 
+    const weatherCache = { geo: {}, forecast: {} };
+
+    function parseLocalDate(value) {
+        if (!value) return null;
+        if (value instanceof Date && !isNaN(value)) {
+            return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+        }
+        const s = String(value).trim();
+        const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        const d = new Date(s);
+        if (isNaN(d)) return null;
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+
+    function addDaysLocal(date, days) {
+        const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        d.setDate(d.getDate() + days);
+        return d;
+    }
+
+    function formatYMD(d) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    }
+
+    function formatChineseDate(d) {
+        return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+    }
+
+    function getTripDayDate(trip, idx) {
+        const start = parseLocalDate(trip && trip.start);
+        if (!start) return null;
+        return addDaysLocal(start, Number(idx) || 0);
+    }
+
+    function inferCityFromTitle(title) {
+        if (!title) return '';
+        let t = String(title);
+        t = t.replace(/\d{4}[\/.\-年]\d{1,2}[\/.\-月]\d{1,2}日?/g, ' ');
+        t = t.replace(/\d{4}\s*年/g, ' ');
+        t = t.replace(/旅遊|旅行|自由行|行程|假期|度假|之旅|遊記|觀光|親子遊|自駕遊|跟團|蜜月|vacation|holiday|travel|tour|trip/gi, ' ');
+        t = t.replace(/[（(].*?[）)]/g, ' ').replace(/[-_~～、，。！!？?]/g, ' ').replace(/\s+/g, ' ').trim();
+        return t;
+    }
+
+    function getDayDestination(trip, idx) {
+        if (!trip) return '目的地';
+        const dest = String(trip.destination || '').trim();
+        if (dest) return dest;
+        const flights = (trip.flights || []).filter(f => f.dayIndex === idx);
+        if (flights.length) {
+            const lastDay = Math.max((trip.days || 1) - 1, 0);
+            if (idx === lastDay && lastDay !== 0) {
+                const from = String(flights[0].from || '').trim();
+                if (from) return from;
+            }
+            const to = String(flights[0].to || '').trim();
+            if (to) return to;
+            const from = String(flights[0].from || '').trim();
+            if (from) return from;
+        }
+        return inferCityFromTitle(trip.title) || trip.title || '目的地';
+    }
+
+    function weatherHint(code) {
+        const c = Number(code);
+        if (c === 0) return '晴朗';
+        if (c === 1) return '大致晴朗';
+        if (c === 2) return '部分多雲';
+        if (c === 3) return '多雲';
+        if (c === 45 || c === 48) return '有霧';
+        if (c >= 51 && c <= 57) return '毛毛雨';
+        if (c >= 61 && c <= 67) return '下雨';
+        if (c >= 71 && c <= 77) return '下雪';
+        if (c >= 80 && c <= 82) return '陣雨';
+        if (c === 85 || c === 86) return '陣雪';
+        if (c >= 95) return '雷暴';
+        return '天氣資訊';
+    }
+
+    async function fetchWeatherForDay(city, ymd) {
+        try {
+            const geoKey = String(city || '').trim().toLowerCase();
+            if (!geoKey || !ymd) return null;
+            let geo = weatherCache.geo[geoKey];
+            if (!geo) {
+                const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh`);
+                if (!res.ok) return null;
+                const data = await res.json();
+                const r = data.results && data.results[0];
+                if (!r) return null;
+                geo = { lat: r.latitude, lon: r.longitude, name: r.name };
+                weatherCache.geo[geoKey] = geo;
+            }
+            const fKey = `${geo.lat},${geo.lon},${ymd}`;
+            if (weatherCache.forecast[fKey]) return weatherCache.forecast[fKey];
+            const url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&start_date=${ymd}&end_date=${ymd}`;
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            const data = await res.json();
+            const daily = data.daily;
+            if (!daily || !Array.isArray(daily.time) || daily.time[0] !== ymd) return null;
+            if (daily.temperature_2m_max[0] == null || daily.temperature_2m_min[0] == null) return null;
+            const result = {
+                max: daily.temperature_2m_max[0],
+                min: daily.temperature_2m_min[0],
+                hint: weatherHint(daily.weather_code[0])
+            };
+            weatherCache.forecast[fKey] = result;
+            return result;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function formatHKD(n) {
+        return 'HK$' + Math.round(Number(n) || 0).toLocaleString();
+    }
+
+    function getSplitMembers(trip) {
+        const names = [];
+        const add = (n) => {
+            const name = String(n || '').trim();
+            if (!name) return;
+            if (!names.includes(name)) names.push(name);
+        };
+        (trip.splitMembers || []).forEach(add);
+        (trip.wallets || []).forEach(w => add(w.name));
+        (trip.splitItems || []).forEach(i => {
+            add(i.payer);
+            (i.participants || []).forEach(add);
+        });
+        return names;
+    }
+
+    function getItemParticipants(item, members, payers) {
+        if (Array.isArray(item.participants) && item.participants.length) {
+            return item.participants.map(n => String(n).trim()).filter(Boolean);
+        }
+        if (members && members.length) return members.slice();
+        return (payers || []).slice();
+    }
+
+    function calcSplitSettlement(trip) {
+        const items = trip.splitItems || [];
+        const members = getSplitMembers(trip);
+        const payers = [...new Set(items.map(i => String(i.payer || '').trim()).filter(Boolean))];
+        const paid = {}, owed = {};
+        const ensure = (n) => { if (!(n in paid)) paid[n] = 0; if (!(n in owed)) owed[n] = 0; };
+        members.forEach(ensure);
+        items.forEach(i => {
+            const amount = parseFloat(i.amount) || 0;
+            const payer = String(i.payer || '').trim();
+            const parts = getItemParticipants(i, members, payers);
+            if (payer) { ensure(payer); paid[payer] += amount; }
+            const count = parts.length;
+            if (!count) return;
+            const share = amount / count;
+            parts.forEach(p => { ensure(p); owed[p] += share; });
+        });
+        const people = Object.keys(paid);
+        const balances = people.map(n => ({ n, paid: paid[n], owed: owed[n], bal: paid[n] - owed[n] }));
+        const debtors = balances.filter(b => b.bal < -0.5).map(b => ({ n: b.n, v: -b.bal }));
+        const creditors = balances.filter(b => b.bal > 0.5).map(b => ({ n: b.n, v: b.bal }));
+        const transfers = [];
+        let i = 0, j = 0;
+        while (i < debtors.length && j < creditors.length) {
+            const m = Math.min(debtors[i].v, creditors[j].v);
+            transfers.push({ from: debtors[i].n, to: creditors[j].n, amount: m });
+            debtors[i].v -= m;
+            creditors[j].v -= m;
+            if (debtors[i].v < 0.5) i++;
+            if (creditors[j].v < 0.5) j++;
+        }
+        const total = items.reduce((a, it) => a + (parseFloat(it.amount) || 0), 0);
+        return { members, balances, transfers, total, payers };
+    }
+
+    function renderSplitParticipantChecks(selected) {
+        const box = document.getElementById('split-participants');
+        if (!box || !currentTrip) return;
+        const members = getSplitMembers(currentTrip);
+        const payer = (document.getElementById('split-payer').value || '').trim();
+        const all = members.slice();
+        if (payer && !all.includes(payer)) all.push(payer);
+        if (!all.length) {
+            box.innerHTML = '<div style="color:#888;font-size:0.85rem;">請先在分帳頁新增成員，或輸入付款人</div>';
+            return;
+        }
+        const sel = Array.isArray(selected) ? selected : all.slice();
+        box.innerHTML = all.map(n => {
+            const checked = sel.includes(n) ? 'checked' : '';
+            return `<label class="participant-item"><input type="checkbox" value="${escapeHtml(n)}" ${checked}> ${escapeHtml(n)}</label>`;
+        }).join('');
+    }
+
     async function geocodeAddress(query) {
         if (!query) return null;
         let cleanQuery = query
@@ -624,13 +843,12 @@
         pre.onclick=()=>{dayIdx=-1; app.refreshView();};
         nav.appendChild(pre);
         if(!currentTrip) return;
-        const start = new Date(currentTrip.start);
         for(let i=0; i<currentTrip.days; i++) {
             const d=document.createElement('div');
             d.className=`day-chip-square ${dayIdx===i?'active':''}`;
-            const cd = new Date(start);
-            cd.setDate(start.getDate()+i);
-            d.innerHTML=`<span class="d-label">Day ${i+1}</span><span class="d-date">${cd.getMonth()+1}/${cd.getDate()}</span>`;
+            const cd = getTripDayDate(currentTrip, i);
+            const dateLabel = cd ? `${cd.getMonth()+1}/${cd.getDate()}` : '';
+            d.innerHTML=`<span class="d-label">Day ${i+1}</span><span class="d-date">${dateLabel}</span>`;
             d.onclick=()=>{dayIdx=i; app.refreshView();};
             nav.appendChild(d);
         }
@@ -655,12 +873,24 @@
         if(!c) return;
         c.innerHTML="";
         if(!currentTrip) return;
-        const d = new Date(currentTrip.start);
-        d.setDate(d.getDate()+idx);
-        const dateStr=d.toISOString().split('T')[0];
-        const searchQuery = encodeURIComponent(`weather ${currentTrip.title} 攝氏`);
-        const wUrl = `https://www.google.com/search?q=${searchQuery}`;
-        c.innerHTML += `<div class="weather-card" onclick="window.open('${wUrl}','_blank')"><div class="weather-left"><i class="fas fa-cloud-sun weather-icon" style="font-size:2rem;"></i><div><div class="weather-temp">查看天氣</div><div class="weather-desc">${dateStr} (點擊查看 °C)</div></div></div><div><i class="fas fa-chevron-right"></i></div></div>`;
+        const dayDate = getTripDayDate(currentTrip, idx);
+        const ymd = dayDate ? formatYMD(dayDate) : '';
+        const zhDate = dayDate ? formatChineseDate(dayDate) : '';
+        const dest = getDayDestination(currentTrip, idx);
+        const wUrl = `https://www.google.com/search?q=${encodeURIComponent(`${dest} 天氣 ${zhDate}`)}&hl=zh-TW`;
+        const weatherToken = `${idx}|${ymd}|${dest}`;
+        const linkLabel = `查看${dest}${zhDate} 天氣`;
+        c.innerHTML += `<div class="weather-card" id="day-weather-card" data-token="${escapeHtml(weatherToken)}" onclick="window.open('${wUrl}','_blank')"><div class="weather-left"><i class="fas fa-cloud-sun weather-icon" style="font-size:2rem;"></i><div><div class="weather-temp">${escapeHtml(linkLabel)}</div><div class="weather-desc">${escapeHtml(dest)}${zhDate ? ' · ' + escapeHtml(zhDate) : ''}</div></div></div><div><i class="fas fa-chevron-right"></i></div></div>`;
+        if (dest && ymd) {
+            fetchWeatherForDay(dest, ymd).then(w => {
+                const card = document.getElementById('day-weather-card');
+                if (!card || card.getAttribute('data-token') !== weatherToken || !w) return;
+                const tempEl = card.querySelector('.weather-temp');
+                const descEl = card.querySelector('.weather-desc');
+                if (tempEl) tempEl.textContent = `最高 ${Math.round(w.max)}°C / 最低 ${Math.round(w.min)}°C`;
+                if (descEl) descEl.textContent = `${dest} · ${zhDate} · ${w.hint}`;
+            });
+        }
 
         if(idx===0 || idx===currentTrip.days-1) {
             const fls = (currentTrip.flights||[]).filter(f=>f.dayIndex===idx);
@@ -724,28 +954,45 @@
 
     const renderSplitBill = () => {
         const c=document.getElementById('split-list'); c.innerHTML="";
-        if(!currentTrip) return;
-        (currentTrip.splitItems||[]).forEach(s => {
-            c.innerHTML += `<div class="split-item"><div class="split-item-left"><h4>${escapeHtml(s.name)}</h4><span><i class="fas fa-user"></i> 付款人: ${escapeHtml(s.payer)}</span></div><div class="split-item-right"><div class="split-item-amount">HK$${Number(s.amount||0).toLocaleString()}</div><div style="display:flex; justify-content:flex-end; gap:5px; margin-top:5px;"><div class="action-btn" onclick="window.app.openAddSplitModal(${s.id})"><i class="fas fa-pen"></i></div><div class="action-btn" onclick="event.stopPropagation(); window.app.deleteSplitItem(${s.id})"><i class="fas fa-trash"></i></div></div></div></div>`;
-        });
-        const sSummary = document.getElementById('split-summary-area'); sSummary.innerHTML="";
-        let total=0; const paid={}; const names=new Set();
-        (currentTrip.splitItems||[]).forEach(i => { total+=parseFloat(i.amount)||0; names.add(i.payer); paid[i.payer]=(paid[i.payer]||0)+(parseFloat(i.amount)||0); });
-        if(names.size<2) { sSummary.innerHTML = `<div class="split-summary-card"><div style="font-size:1.1rem; opacity:0.8;">請新增更多成員</div><div style="margin-top:10px;">需兩人以上才能計算分帳</div></div>`; }
-        else {
-            const avg = total/names.size;
-            let summaryHTML = `<div class="split-summary-card"><div style="font-size:0.9rem; opacity:0.9;">總支出</div><div class="split-total-amount">HK$${Math.round(total).toLocaleString()}</div><div class="split-avg-label">平均每人 HK$${Math.round(avg).toLocaleString()}</div></div><div class="settlement-card"><h3 style="margin-bottom:15px; font-size:1.1rem; color:#333;">結算方案</h3>`;
-            let d=[], cr=[];
-            names.forEach(n => { const b=paid[n]-avg; if(b<-1) d.push({n,v:Math.abs(b)}); else if(b>1) cr.push({n,v:b}); });
-            let i=0, j=0;
-            while(i<d.length && j<cr.length){
-                const m=Math.min(d[i].v, cr[j].v);
-                summaryHTML += `<div class="debt-row"><div class="debt-user-block">${getAvatar(d[i].n)}<div class="debt-user-name">${escapeHtml(d[i].n)}</div></div><div class="debt-visual">給 <i class="fas fa-long-arrow-alt-right debt-arrow"></i></div><div class="debt-user-block">${getAvatar(cr[j].n)}<div class="debt-user-name">${escapeHtml(cr[j].n)}</div></div><div class="debt-amount">HK$${Math.round(m).toLocaleString()}</div></div>`;
-                d[i].v-=m; cr[j].v-=m; if(d[i].v<1) i++; if(cr[j].v<1) j++;
-            }
-            summaryHTML += `</div>`;
-            sSummary.innerHTML=summaryHTML;
+        const bar = document.getElementById('split-members-bar');
+        const sSummary = document.getElementById('split-summary-area');
+        if(sSummary) sSummary.innerHTML="";
+        if(!currentTrip) { if(bar) bar.innerHTML=""; return; }
+        const members = getSplitMembers(currentTrip);
+        if (bar) {
+            bar.innerHTML = members.map(n => `<span class="split-member-chip">${escapeHtml(n)}</span>`).join('') +
+                `<button type="button" class="split-member-chip split-member-add" onclick="window.app.addSplitMember()"><i class="fas fa-plus"></i> 新增成員</button>`;
         }
+        const items = currentTrip.splitItems || [];
+        items.forEach(s => {
+            const parts = getItemParticipants(s, members, [...new Set(items.map(i => String(i.payer||'').trim()).filter(Boolean))]);
+            const partLabel = parts.length ? `<span><i class="fas fa-users"></i> 分給: ${escapeHtml(parts.join('、'))}</span>` : '';
+            c.innerHTML += `<div class="split-item"><div class="split-item-left"><h4>${escapeHtml(s.name)}</h4><span><i class="fas fa-user"></i> 付款人: ${escapeHtml(s.payer)}</span>${partLabel}</div><div class="split-item-right"><div class="split-item-amount">${formatHKD(s.amount||0)}</div><div style="display:flex; justify-content:flex-end; gap:5px; margin-top:5px;"><div class="action-btn" onclick="window.app.openAddSplitModal(${s.id})"><i class="fas fa-pen"></i></div><div class="action-btn" onclick="event.stopPropagation(); window.app.deleteSplitItem(${s.id})"><i class="fas fa-trash"></i></div></div></div></div>`;
+        });
+        const result = calcSplitSettlement(currentTrip);
+        if (result.balances.length < 2) {
+            sSummary.innerHTML = `<div class="split-summary-card"><div style="font-size:1.1rem; opacity:0.8;">請新增更多成員</div><div style="margin-top:10px;">需兩人以上才能計算分帳。可按下方「新增成員」，並在記帳時勾選「誰一起分」。</div></div>`;
+            return;
+        }
+        let summaryHTML = `<div class="split-summary-card"><div style="font-size:0.9rem; opacity:0.9;">總支出</div><div class="split-total-amount">${formatHKD(result.total)}</div></div>`;
+        summaryHTML += `<div class="settlement-card"><h3 style="margin-bottom:10px; font-size:1.1rem; color:#333;">各人結餘</h3><table class="person-balance-table"><thead><tr><th>成員</th><th>已付</th><th>應付</th><th>結餘</th></tr></thead><tbody>`;
+        result.balances.forEach(b => {
+            let balHtml;
+            if (Math.abs(b.bal) < 0.5) balHtml = `<span class="balance-zero">結清</span>`;
+            else if (b.bal > 0) balHtml = `<span class="balance-pos">應收 ${formatHKD(b.bal)}</span>`;
+            else balHtml = `<span class="balance-neg">應付 ${formatHKD(-b.bal)}</span>`;
+            summaryHTML += `<tr><td>${escapeHtml(b.n)}</td><td>${formatHKD(b.paid)}</td><td>${formatHKD(b.owed)}</td><td>${balHtml}</td></tr>`;
+        });
+        summaryHTML += `</tbody></table></div><div class="settlement-card"><h3 style="margin-bottom:15px; font-size:1.1rem; color:#333;">結算方案</h3>`;
+        if (!result.transfers.length) {
+            summaryHTML += `<div style="color:#888; font-size:0.9rem;">已結清，無需轉帳</div>`;
+        } else {
+            result.transfers.forEach(t => {
+                summaryHTML += `<div class="debt-row"><div class="debt-user-block">${getAvatar(t.from)}<div class="debt-user-name">${escapeHtml(t.from)}</div></div><div class="debt-visual">給 <i class="fas fa-long-arrow-alt-right debt-arrow"></i></div><div class="debt-user-block">${getAvatar(t.to)}<div class="debt-user-name">${escapeHtml(t.to)}</div></div><div class="debt-amount">${formatHKD(t.amount)}</div></div>`;
+            });
+        }
+        summaryHTML += `</div>`;
+        sSummary.innerHTML = summaryHTML;
     };
 
     const renderFoodList = () => {
@@ -816,7 +1063,7 @@
             btn.innerText="建立";
             btn.disabled = false;
             document.getElementById('input-custom-id').disabled = false;
-            ['input-custom-id','input-title','input-desc'].forEach(i=>{document.getElementById(i).value=''});
+            ['input-custom-id','input-title','input-destination','input-desc'].forEach(i=>{document.getElementById(i).value=''});
             document.getElementById('input-start').valueAsDate=new Date();
             const tomorrow = new Date();
             tomorrow.setDate(tomorrow.getDate() + 1);
@@ -904,14 +1151,35 @@
                 document.getElementById('split-payer').value=s.payer;
                 document.getElementById('split-amount').value=s.amount;
                 document.getElementById('split-modal-title').innerText="編輯分帳";
+                const members = getSplitMembers(currentTrip);
+                const payers = [...new Set((currentTrip.splitItems||[]).map(i => String(i.payer||'').trim()).filter(Boolean))];
+                const selected = Array.isArray(s.participants) && s.participants.length ? s.participants : getItemParticipants(s, members, payers);
+                renderSplitParticipantChecks(selected);
             } else {
                 document.getElementById('split-id').value="";
                 document.getElementById('split-name').value="";
                 document.getElementById('split-payer').value="";
                 document.getElementById('split-amount').value="";
                 document.getElementById('split-modal-title').innerText="新增分帳";
+                renderSplitParticipantChecks(null);
             }
             document.getElementById('add-split-modal').classList.add('active');
+        },
+        refreshSplitParticipants: () => {
+            const box = document.getElementById('split-participants');
+            if (!box) return;
+            const boxes = [...box.querySelectorAll('input[type=checkbox]')];
+            const checked = boxes.filter(el => el.checked).map(el => el.value);
+            renderSplitParticipantChecks(boxes.length ? checked : null);
+        },
+        addSplitMember: () => {
+            if (!currentTrip) return;
+            const name = (prompt("新增成員名稱") || "").trim();
+            if (!name) return;
+            const members = getSplitMembers(currentTrip);
+            if (!members.includes(name)) members.push(name);
+            currentTrip.splitMembers = members;
+            app.saveTrip(currentTrip);
         },
         closeSplitModal: () => document.getElementById('add-split-modal').classList.remove('active'),
         openAddShoppingModal: (id) => {
@@ -1000,6 +1268,7 @@
                     if(t) {
                         Object.assign(t, {
                             title, start, end, days:days>0?days:1,
+                            destination: document.getElementById('input-destination').value.trim(),
                             desc:document.getElementById('input-desc').value,
                             cover:temp.cover||t.cover, bg:temp.bg||t.bg,
                             themeColor:temp.color||t.themeColor, icon:temp.icon||t.icon
@@ -1031,9 +1300,10 @@
 
                     const newT = {
                         id:Date.now(), title, start, end, days:days>0?days:1,
+                        destination: document.getElementById('input-destination').value.trim(),
                         cover:temp.cover||'', bg:temp.bg||'',
                         themeColor:temp.color||'#708090', icon:temp.icon||'✈️', currency:cur,
-                        flights:[], spots:[], shoppingList:[], expenses:[], wallets:[], splitItems:[], infoCards:[], checklists: [],
+                        flights:[], spots:[], shoppingList:[], expenses:[], wallets:[], splitItems:[], splitMembers: [], infoCards:[], checklists: [],
                         docId: cid, customId: cid
                     };
                     rememberId(cid);
@@ -1250,12 +1520,23 @@
             const id=document.getElementById('split-id').value;
             const amt=parseFloat(document.getElementById('split-amount').value);
             if(isNaN(amt)) return;
-            const item = { id: id?parseInt(id):Date.now(), name:document.getElementById('split-name').value, payer:document.getElementById('split-payer').value, amount:amt };
+            const payer = document.getElementById('split-payer').value.trim();
+            if(!payer) return alert("請填寫付款人");
+            let participants = [...document.querySelectorAll('#split-participants input[type=checkbox]:checked')].map(el => el.value.trim()).filter(Boolean);
+            if (!participants.length) {
+                participants = getSplitMembers(currentTrip);
+                if (!participants.length) participants = [payer];
+            }
+            const item = { id: id?parseInt(id):Date.now(), name:document.getElementById('split-name').value, payer, amount:amt, participants };
             if(!currentTrip.splitItems) currentTrip.splitItems=[];
             if(id) {
                 const i=currentTrip.splitItems.findIndex(x=>x.id==id);
                 if(i>-1) currentTrip.splitItems[i]=item;
             } else currentTrip.splitItems.push(item);
+            const members = getSplitMembers(currentTrip);
+            if (!members.includes(payer)) members.push(payer);
+            participants.forEach(p => { if (!members.includes(p)) members.push(p); });
+            currentTrip.splitMembers = members;
             app.saveTrip(currentTrip);
             app.closeSplitModal();
         },
@@ -1332,6 +1613,7 @@
             document.getElementById('input-custom-id').value = tripDocId(t);
             document.getElementById('input-custom-id').disabled = true;
             document.getElementById('input-title').value=t.title;
+            document.getElementById('input-destination').value=t.destination || '';
             document.getElementById('input-start').value=t.start;
             document.getElementById('input-end').value=t.end;
             document.getElementById('input-desc').value=t.desc || '';
