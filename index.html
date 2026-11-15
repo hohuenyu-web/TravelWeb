@@ -1,0 +1,1529 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>JourneyCrafter</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@300;500;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #FAF9F6;
+            --primary: #708090;
+            --accent: #D4AF37;
+            --text-main: #2c3e50;
+            --text-light: #95a5a6;
+            --card-bg: rgba(255, 255, 255, 0.95);
+            --shadow: 0 8px 30px rgba(0,0,0,0.08);
+            --nav-height: 70px;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { font-family: 'Noto Serif TC', serif; background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 0; height: 100vh; overflow: hidden; position: relative; }
+        #sync-status { position: fixed; top: 15px; right: 15px; z-index: 9999; width: 12px; height: 12px; border-radius: 50%; background: #ccc; box-shadow: 0 0 5px rgba(0,0,0,0.2); transition: 0.3s; border: 2px solid white; }
+        #sync-status.online { background: #27ae60; } #sync-status.offline { background: #e74c3c; }
+        #toast-container { position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); z-index: 9999; pointer-events: none; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        .toast-msg { background: rgba(44, 62, 80, 0.95); color: white; padding: 10px 20px; border-radius: 30px; font-size: 0.9rem; animation: fadeInOut 3s forwards; max-width: 80%; text-align: center; backdrop-filter: blur(4px); }
+        @keyframes fadeInOut { 0% { opacity: 0; transform: translateY(20px); } 10% { opacity: 1; transform: translateY(0); } 90% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(-20px); } }
+        .input-floating { width: 100%; padding: 15px; border: 1px solid #eee; background: white; border-radius: 12px; font-size: 1rem; outline: none; margin-bottom: 10px; font-family: inherit; }
+        .btn-primary { background: var(--primary); color: white; border: none; padding: 15px; border-radius: 12px; font-size: 1rem; width: 100%; font-weight: 500; cursor: pointer; transition: 0.3s; font-family: inherit; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-cancel { background: #f0f0f0; color: #666; border: none; padding: 15px; border-radius: 12px; font-size: 1rem; flex: 1; cursor: pointer; font-family: inherit; }
+        #home-screen { position: absolute; width: 100%; height: 100%; display: flex; flex-direction: column; background: #FAF9F6; z-index: 100; transition: 0.4s; }
+        #home-screen.hidden { transform: translateX(-100%); pointer-events: none; opacity: 0; }
+        .home-header { padding: 20px 25px; display: flex; justify-content: space-between; align-items: center; }
+        .home-title { font-size: 1.5rem; font-weight: 700; color: #708090; }
+        .home-actions { display: flex; gap: 10px; }
+        .btn-add-trip, .btn-join-trip { padding: 8px 15px; border-radius: 20px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 6px; font-size: 0.9rem; transition: all 0.2s; }
+        .btn-add-trip { color: #fff; background: var(--accent); box-shadow: 0 4px 10px rgba(212, 175, 55, 0.3); }
+        .btn-add-trip:active { transform: scale(0.95); }
+        .btn-join-trip { color: #3498db; background: rgba(52, 152, 219, 0.1); }
+        .btn-join-trip:active { background: rgba(52, 152, 219, 0.2); }
+        .trip-list-container { flex: 1; overflow-y: auto; padding: 10px 25px 80px 25px; }
+        .trip-card-item { background: white; border-radius: 20px; margin-bottom: 25px; box-shadow: var(--shadow); overflow: hidden; position: relative; transition: transform 0.2s; cursor: pointer; }
+        .tc-image { height: 160px; background-size: cover; background-position: center; position: relative; }
+        .tc-content { padding: 15px 20px; }
+        .tc-title { font-size: 1.4rem; font-weight: 700; color: #2c3e50; margin-bottom: 5px; }
+        .tc-meta-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: #888; gap: 8px; flex-wrap: wrap; }
+        .trip-code-chip { display: inline-flex; align-items: center; gap: 6px; background: #f4f1e8; color: #6b5b2e; border-radius: 999px; padding: 4px 10px; font-size: 0.8rem; font-weight: 700; margin-top: 8px; }
+        .trip-code-chip button { border: none; background: transparent; cursor: pointer; color: inherit; padding: 0; }
+        .card-tools { position: absolute; top: 15px; right: 15px; display: flex; gap: 8px; z-index: 10; }
+        .btn-card-tool { width: 36px; height: 36px; background: rgba(255,255,255,0.95); border-radius: 50%; color: #555; display: flex; align-items: center; justify-content: center; font-size: 1rem; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: 0.2s; }
+        .btn-card-tool:hover { transform: scale(1.1); color: #e74c3c; }
+        #create-trip-modal, #add-flight-modal, #add-spot-modal, #join-trip-modal, #add-expense-modal, #add-wallet-modal, #add-split-modal, #add-shopping-modal, #add-info-modal, #settle-up-modal, #confirm-modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 2000; display: flex; align-items: flex-end; opacity: 0; pointer-events: none; transition: 0.3s;
+        }
+        .active { opacity: 1 !important; pointer-events: auto !important; }
+        .modal-content { background: #FAF9F6; width: 100%; height: 90vh; border-radius: 25px 25px 0 0; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 0.3s; }
+        .active .modal-content { transform: translateY(0); }
+        #join-trip-modal .modal-content, #add-expense-modal .modal-content, #add-wallet-modal .modal-content, #add-split-modal .modal-content, #settle-up-modal .modal-content, #confirm-modal .modal-content { height: auto; min-height: 30vh; }
+        .creator-form { flex: 1; overflow-y: auto; padding: 25px; }
+        .creator-actions { padding: 20px; background: white; display: flex; gap: 15px; border-top: 1px solid #eee; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+        .upload-btn-wrapper { position: relative; overflow: hidden; display: inline-block; width: 100%; }
+        .upload-input { font-size: 100px; position: absolute; left: 0; top: 0; opacity: 0; cursor: pointer; height: 100%; width: 100%; }
+        .preview-box { height: 100px; display:none; margin-top:10px; border-radius:10px; background-size:cover; background-position:center; border: 1px solid #ddd; }
+        .icon-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; max-height: 150px; overflow-y: auto; padding: 5px; }
+        .icon-option { width: 40px; height: 40px; border-radius: 10px; background: #f9f9f9; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 2px solid transparent; transition: 0.2s; font-size: 1.2rem; }
+        .icon-option.selected { border-color: var(--accent); background: #fffdf5; transform: scale(1.1); box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .color-grid { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 10px; }
+        .color-option { min-width: 45px; height: 45px; border-radius: 50%; cursor: pointer; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); transition: 0.2s; flex-shrink: 0; }
+        .color-option.selected { transform: scale(1.15); box-shadow: 0 0 0 3px var(--accent); }
+        #main-app { position: absolute; width: 100%; height: 100%; flex-direction: column; background-color: var(--bg-color); z-index: 50; display: none; overflow: hidden; }
+        #main-app.active { display: flex; }
+        #main-app-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -2; background-size: cover; background-position: center; filter: blur(1px); transform: scale(1.05); }
+        #main-app::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255, 255, 255, 0.45); z-index: -1; pointer-events: none; backdrop-filter: blur(5px); }
+        .app-header { height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: rgba(255,255,255,0.8); backdrop-filter: blur(10px); z-index: 10; gap: 10px; }
+        .content-area { flex: 1; overflow-y: auto; padding-bottom: 90px; position: relative; z-index: 1; }
+        .tab-content { display: none; height: 100%; }
+        .tab-content.active { display: block; }
+        .fab-add { position: fixed; bottom: 90px; right: 25px; width: 60px; height: 60px; background: var(--accent); border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; font-size: 1.6rem; box-shadow: 0 5px 20px rgba(0,0,0,0.3); z-index: 90; cursor: pointer; transition: 0.3s; border: 3px solid white; }
+        .fab-add:active { transform: scale(0.9); }
+        .bottom-nav { height: var(--nav-height); background: rgba(255,255,255,0.95); display: flex; justify-content: space-around; align-items: center; position: fixed; bottom: 0; width: 100%; padding-bottom: env(safe-area-inset-bottom); z-index: 20; box-shadow: 0 -5px 20px rgba(0,0,0,0.03); backdrop-filter: blur(5px); }
+        .nav-item { display: flex; flex-direction: column; align-items: center; justify-content: center; color: #b0bec5; font-size: 0.75rem; width: 14%; height: 100%; cursor: pointer; }
+        .nav-item.active { color: var(--primary); transform: translateY(-2px); }
+        .day-nav { display: flex; gap: 12px; overflow-x: auto; padding: 15px 20px; }
+        .day-chip-square { flex: 0 0 auto; width: 70px; height: 75px; border-radius: 16px; background: var(--card-bg); color: #999; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .day-chip-square.active { border: 2px solid var(--primary); background: rgba(255,255,255,0.9); transform: translateY(-3px); }
+        .day-chip-square .d-label { font-size: 0.8rem; font-weight: 700; }
+        .day-chip-square .d-date { font-size: 0.7rem; color: #666; }
+        .weather-card { background: linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%); border-radius: 20px; padding: 20px; color: white; display: flex; justify-content: space-between; align-items: center; margin: 20px; cursor: pointer; box-shadow: var(--shadow); }
+        .weather-left { display: flex; align-items: center; gap: 15px; }
+        .weather-temp { font-size: 1.1rem; font-weight: 700; }
+        .flight-card-v2 { background: linear-gradient(135deg, #5b7fff 0%, #3366ff 100%); border-radius: 24px; padding: 20px; color: white; margin: 20px; position: relative; box-shadow: var(--shadow); }
+        .fc-top { display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .fc-tag { background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 8px; font-size: 0.75rem; font-weight: 700; letter-spacing: 1px; }
+        .fc-time { font-size: 1.5rem; font-weight: 700; letter-spacing: 1px; }
+        .fc-code { font-size: 2.2rem; font-weight: 700; line-height: 1; }
+        .fc-bottom { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; }
+        .fc-info { font-size: 0.9rem; font-weight: 500; }
+        .schedule-card { background: var(--card-bg); border-radius: 20px; padding: 15px; margin: 0 20px 15px 20px; display: flex; gap: 15px; position: relative; backdrop-filter: blur(4px); transition: 0.2s; flex-direction: column; }
+        .schedule-card:active { transform: scale(0.98); }
+        .sc-main { display: flex; gap: 15px; }
+        .sc-left { width: 50px; text-align: center; }
+        .sc-time { font-weight: 700; font-size: 0.9rem; margin-bottom: 5px; }
+        .sc-right { flex: 1; }
+        .sc-title { font-weight: 700; font-size: 1.1rem; margin-bottom: 5px; }
+        .sc-detail-row { font-size: 0.85rem; color: #666; display: flex; align-items: center; gap: 5px; margin-bottom: 3px; word-break: break-all; }
+        .sc-tools { position: absolute; top: 15px; right: 15px; display: flex; gap: 10px; }
+        .sc-tool-btn { color: #ccc; cursor: pointer; transition: 0.2s; font-size: 1rem; width: 32px; height: 32px; display:flex; align-items:center; justify-content:center; border-radius: 50%; background: #f5f5f5; }
+        .sc-tool-btn:hover { color: #e74c3c; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .sc-details-block { margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(0,0,0,0.1); padding-left: 65px; }
+        .wallet-list-container { display: flex; gap: 15px; overflow-x: auto; padding: 10px 20px; }
+        .wallet-card { flex: 0 0 auto; width: 220px; height: 120px; background: linear-gradient(135deg, #708090 0%, #2c3e50 100%); border-radius: 18px; padding: 15px; color: white; display: flex; flex-direction: column; justify-content: space-between; position: relative; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .wallet-card.wallet-add { background: white; border: 2px dashed #ccc; color: #ccc; align-items: center; justify-content: center; width: 120px; cursor: pointer; }
+        .wallet-name { font-size: 1rem; opacity: 0.9; }
+        .wallet-balance { font-size: 1.6rem; font-weight: 700; }
+        .wallet-tools { position: absolute; top: 10px; right: 10px; display: flex; gap: 5px; }
+        .wallet-tool-btn { width: 28px; height: 28px; background: rgba(255,255,255,0.2); border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; cursor: pointer; transition: 0.2s; }
+        .split-list { padding: 20px; }
+        .split-summary-card { background: linear-gradient(135deg, #FF9966 0%, #FF5E62 100%); border-radius: 20px; padding: 25px; color: white; box-shadow: 0 10px 25px rgba(255, 94, 98, 0.3); margin-bottom: 25px; text-align: center; }
+        .split-total-amount { font-size: 2.5rem; font-weight: 700; margin: 10px 0; }
+        .split-avg-label { background: rgba(255, 255, 255, 0.2); padding: 5px 15px; border-radius: 20px; font-size: 0.9rem; display: inline-block; }
+        .split-item { background: var(--card-bg); border-radius: 16px; padding: 15px 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+        .split-item-left h4 { margin: 0; font-size: 1rem; color: #333; }
+        .split-item-left span { font-size: 0.8rem; color: #888; display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+        .split-item-amount { font-weight: 700; font-size: 1.1rem; color: var(--primary); }
+        .settlement-card { background: white; border-radius: 16px; padding: 20px; margin-top: 20px; border: 1px solid #eee; }
+        .debt-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px dashed #eee; }
+        .debt-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .debt-visual { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; color: #888; font-size: 0.9rem; }
+        .debt-arrow { color: #e74c3c; font-size: 1.2rem; }
+        .debt-amount { background: #e74c3c; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.9rem; font-weight: 700; }
+        .user-avatar { width: 32px; height: 32px; border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.9rem; flex-shrink: 0; }
+        .debt-user-block { display: flex; flex-direction: column; align-items: center; width: 60px; }
+        .debt-user-name { font-size: 0.8rem; margin-top: 4px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+        .expense-item, .shopping-card, .info-card { background: var(--card-bg); border-radius: 16px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(4px); }
+        .item-actions { display: flex; gap: 10px; }
+        .action-btn { color: #888; cursor: pointer; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #f0f0f0; transition: 0.2s; }
+        .action-btn:hover { background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); color: var(--primary); }
+        .action-btn.delete:hover { color: #e74c3c; }
+        .shopping-card { background: var(--card-bg); border-radius: 16px; overflow: hidden; display: flex; margin-bottom: 15px; backdrop-filter: blur(4px); position: relative; padding:0; }
+        .shop-img { width: 100px; height: 100px; background: #eee; background-size: cover; background-position: center; }
+        .shop-content { padding: 15px; flex: 1; }
+        .info-card { background: var(--card-bg); border-radius: 16px; margin-bottom: 15px; overflow: hidden; backdrop-filter: blur(4px); display:block; padding:0; }
+        .info-header { padding: 15px; background: rgba(0,0,0,0.03); font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
+        .info-img-box { width: 100%; height: 150px; background-size: cover; background-position: center; }
+        .info-body { padding: 15px; white-space: pre-wrap; font-size: 0.9rem; }
+        .btn-section-add { background: white; border: 1px solid #eee; color: var(--primary); padding: 10px 20px; border-radius: 25px; font-size: 0.9rem; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.05); font-family: inherit; }
+        .pre-trip-section { background: var(--card-bg); border-radius: 16px; padding: 15px; margin: 15px; backdrop-filter: blur(4px); }
+        .pre-trip-header { display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
+        .checklist-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #f8f9fa; border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+        .checklist-item i { color: #dc3545; cursor: pointer; padding: 5px; }
+        .empty-state { text-align: center; color: #999; padding: 40px; font-style: italic; }
+        .backup-section { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+        .btn-backup, .btn-restore { padding: 12px; border-radius: 8px; border: none; background: var(--primary); color: white; cursor: pointer; font-family: inherit; }
+        .date-row { display: flex; gap: 10px; }
+        .date-row input, .date-row select { flex: 1; }
+        .form-section { margin-bottom: 20px; }
+        .section-title { font-weight: 600; margin-bottom: 8px; color: var(--text-main); }
+        .btn-upload { width: 100%; padding: 12px; background: #f8f9fa; border: 1px dashed #ddd; border-radius: 8px; color: #666; cursor: pointer; font-family: inherit; }
+        .modal-header { margin-bottom: 20px; }
+        .modal-header h2 { margin: 0; color: var(--text-main); }
+        #map { height: 100%; width: 100%; }
+        #chart-container { width: 80%; margin: 0 auto 20px auto; max-height: 250px; }
+        .custom-map-marker { background-color: var(--accent); color: white; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 2px solid white; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3); font-size: 0.9rem; }
+        .header-code { font-size: 0.75rem; color: #888; font-weight: 500; }
+    </style>
+</head>
+<body>
+
+    <div id="sync-status" class="offline" title="同步狀態"></div>
+    <div id="toast-container"></div>
+
+    <div id="home-screen">
+        <div class="home-header">
+            <div class="home-title"><i class="fas fa-suitcase-rolling"></i> 我的旅行</div>
+            <div class="home-actions">
+                <div class="btn-join-trip" onclick="window.app.openJoinModal()"><i class="fas fa-user-plus"></i> 加入</div>
+                <div class="btn-add-trip" onclick="window.app.openCreateModal()"><i class="fas fa-plus"></i> 新增</div>
+            </div>
+        </div>
+        <div class="trip-list-container" id="trip-list"></div>
+    </div>
+
+    <div id="create-trip-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2>規劃新旅程</h2></div>
+                <div class="form-section">
+                    <div class="section-title">旅行編號（選填，之後用呢個編號登入睇返行程）</div>
+                    <input type="text" id="input-custom-id" class="input-floating" placeholder="例如：JAPAN26（留空會自動產生）">
+                </div>
+                <div class="form-section">
+                    <div class="section-title">標題</div>
+                    <input type="text" id="input-title" class="input-floating" placeholder="例如：日本京都">
+                </div>
+                <div class="date-row">
+                    <input type="date" id="input-start" class="input-floating">
+                    <input type="date" id="input-end" class="input-floating">
+                </div>
+                <div class="form-section">
+                    <div class="section-title">外觀</div>
+                    <div class="upload-btn-wrapper">
+                        <button class="btn-upload" type="button">上傳封面</button>
+                        <input type="file" class="upload-input" accept="image/*" onchange="window.app.handleImageUpload(this,'cover')">
+                    </div>
+                    <div id="cover-preview" class="preview-box"></div>
+                    <div class="upload-btn-wrapper" style="margin-top:10px">
+                        <button class="btn-upload" type="button">上傳背景</button>
+                        <input type="file" class="upload-input" accept="image/*" onchange="window.app.handleImageUpload(this,'bg')">
+                    </div>
+                    <div id="bg-preview" class="preview-box"></div>
+                </div>
+                <div class="color-grid" id="color-selector"></div>
+                <div class="icon-grid" id="icon-selector"></div>
+                <textarea id="input-desc" class="input-floating" rows="2" placeholder="備註..."></textarea>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeCreateModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.submitTripForm()" id="btn-save-trip">建立</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="join-trip-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2>用編號加入行程</h2></div>
+                <p style="color:#666;margin-top:0;">輸入旅行編號，就可以喺任何裝置睇返同一個行程。</p>
+                <input type="text" id="input-join-id" class="input-floating" placeholder="輸入旅行編號...">
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeJoinModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.joinTrip()">加入並開啟</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-spot-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2 id="spot-modal-title">新增景點</h2></div>
+                <input type="hidden" id="spot-id">
+                <div class="date-row">
+                    <input type="time" id="spot-time" class="input-floating" value="10:00">
+                    <select id="spot-icon" class="input-floating">
+                        <option value="utensils">🍴 餐廳</option>
+                        <option value="camera" selected>📷 景點</option>
+                        <option value="bag-shopping">🛍️ 購物</option>
+                        <option value="hotel">🏨 住宿</option>
+                        <option value="train">🚆 交通</option>
+                    </select>
+                </div>
+                <input type="text" id="spot-title" class="input-floating" placeholder="名稱 (必填)">
+                <input type="text" id="spot-address" class="input-floating" placeholder="地址 (支援自動定位)">
+                <input type="text" id="spot-phone" class="input-floating" placeholder="電話">
+                <input type="text" id="spot-link" class="input-floating" placeholder="預約連結">
+                <input type="text" id="spot-web" class="input-floating" placeholder="網站">
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeSpotModal()">取消</button>
+                <button class="btn-primary" id="btn-save-spot" onclick="window.app.saveSpot()">儲存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-flight-modal">
+        <div class="modal-content" style="height:70vh">
+            <div class="creator-form">
+                <div class="modal-header"><h2>新增航班</h2></div>
+                <input type="text" id="flight-from" class="input-floating" placeholder="出發地">
+                <input type="text" id="flight-to" class="input-floating" placeholder="目的地">
+                <input type="text" id="flight-no" class="input-floating" placeholder="航班編號">
+                <div class="date-row">
+                    <input type="time" id="flight-dep-time" class="input-floating">
+                    <input type="time" id="flight-arr-time" class="input-floating">
+                </div>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeFlightModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.saveFlight()">新增</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-wallet-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2 id="wallet-modal-title">新增錢包</h2></div>
+                <input type="hidden" id="wallet-id">
+                <input type="text" id="wallet-name" class="input-floating" placeholder="名稱 (例如：我的錢包、小明)">
+                <input type="number" id="wallet-balance" class="input-floating" placeholder="初始金額">
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeWalletModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.saveWallet()">儲存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-expense-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2 id="expense-modal-title">新增支出</h2></div>
+                <input type="hidden" id="expense-id">
+                <input type="text" id="expense-name" class="input-floating" placeholder="項目 (選填)">
+                <div class="date-row">
+                    <input type="number" id="expense-amount" class="input-floating" placeholder="金額">
+                    <span id="expense-hkd-hint" style="font-size:0.8rem;color:#27ae60;align-self:center;"></span>
+                </div>
+                <select id="expense-category" class="input-floating">
+                    <option value="utensils">🍴餐飲</option>
+                    <option value="train">🚆交通</option>
+                    <option value="hotel">🏨住宿</option>
+                    <option value="bag-shopping">🛍️購物</option>
+                    <option value="ticket">🎫門票</option>
+                </select>
+                <select id="expense-wallet" class="input-floating"></select>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeExpenseModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.saveExpense()">儲存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-split-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2 id="split-modal-title">新增分帳項目</h2></div>
+                <input type="hidden" id="split-id">
+                <input type="text" id="split-name" class="input-floating" placeholder="項目">
+                <input type="text" id="split-payer" class="input-floating" placeholder="付款人">
+                <input type="number" id="split-amount" class="input-floating" placeholder="金額 (HKD)">
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeSplitModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.saveSplitItem()">儲存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-shopping-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2 id="shop-modal-title">物品</h2></div>
+                <input type="hidden" id="shop-id">
+                <input type="text" id="shop-name" class="input-floating" placeholder="名稱">
+                <input type="text" id="shop-desc" class="input-floating" placeholder="備註">
+                <div class="date-row">
+                    <input type="number" id="shop-price-hkd" class="input-floating" placeholder="HKD">
+                    <input type="number" id="shop-price-local" class="input-floating" placeholder="當地價格">
+                </div>
+                <div class="upload-btn-wrapper">
+                    <button class="btn-upload" type="button">上傳圖片</button>
+                    <input type="file" class="upload-input" accept="image/*" onchange="window.app.handleImageUpload(this,'shop')">
+                </div>
+                <div id="shop-preview" class="preview-box"></div>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeShoppingModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.saveShoppingItem()">儲存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-info-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2 id="info-modal-title">資訊卡片</h2></div>
+                <input type="hidden" id="info-id">
+                <select id="info-type" class="input-floating">
+                    <option value="hotel">🏨酒店</option>
+                    <option value="car">🚗租車</option>
+                    <option value="ticket">🎫票券</option>
+                    <option value="other">📄其他</option>
+                </select>
+                <input type="text" id="info-title" class="input-floating" placeholder="標題">
+                <textarea id="info-detail" class="input-floating" rows="4" placeholder="詳情..."></textarea>
+                <div class="upload-btn-wrapper">
+                    <button class="btn-upload" type="button">上傳憑證</button>
+                    <input type="file" class="upload-input" accept="image/*" onchange="window.app.handleImageUpload(this,'info')">
+                </div>
+                <div id="info-preview" class="preview-box"></div>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeInfoModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.saveInfoCard()">儲存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="settle-up-modal">
+        <div class="modal-content">
+            <div class="creator-form">
+                <div class="modal-header"><h2>分帳結算</h2></div>
+                <div id="settlement-results"></div>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-primary" onclick="window.app.closeSettlementModal()">關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="confirm-modal">
+        <div class="modal-content" style="height:auto; min-height:30vh;">
+            <div class="creator-form">
+                <div class="modal-header"><h2>確認操作</h2></div>
+                <p id="confirm-msg" style="font-size:1.1rem; margin-bottom:20px; color:#2c3e50;">確認需要刪除嗎？</p>
+            </div>
+            <div class="creator-actions">
+                <button class="btn-cancel" onclick="window.app.closeConfirmModal()">取消</button>
+                <button class="btn-primary" onclick="window.app.confirmAction()" style="background-color: #e74c3c;">確認</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="main-app">
+        <div id="main-app-bg"></div>
+        <header class="app-header">
+            <i class="fas fa-arrow-left" style="color:var(--primary); font-size:1.4rem; cursor: pointer;" onclick="window.app.goHome()"></i>
+            <div style="font-weight:700; color: var(--text-main); display: flex; flex-direction: column; align-items: center; min-width:0;">
+                <div id="app-title-display">Title</div>
+                <div class="header-code" id="app-code-display"></div>
+            </div>
+            <div style="width: 20px;"></div>
+        </header>
+
+        <div class="content-area">
+            <div id="tab-itinerary" class="tab-content active" style="padding:0;">
+                <div id="day-nav-container" class="day-nav"></div>
+                <div id="timeline-view" class="timeline-container"></div>
+                <div class="fab-add" onclick="window.app.handleFabClick()"><i class="fas fa-plus"></i></div>
+            </div>
+            <div id="tab-map" class="tab-content" style="padding:0; height:100%;"><div id="map"></div></div>
+            <div id="tab-budget" class="tab-content" style="padding: 20px;">
+                <div class="wallet-list-container" id="wallet-list-container"></div>
+                <div class="budget-overview" style="margin-top:20px;text-align:center;">
+                    <h3>總支出</h3>
+                    <div style="font-size:2rem;font-weight:700;" id="budget-total-display">0</div>
+                    <div id="chart-container"><canvas id="expenseChart"></canvas></div>
+                </div>
+                <div class="expense-list" id="expense-list" style="margin-top:20px;"></div>
+                <div class="fab-add" onclick="window.app.openAddExpenseModal()"><i class="fas fa-plus"></i></div>
+            </div>
+            <div id="tab-split" class="tab-content" style="padding: 20px;">
+                <div class="budget-overview" style="margin-bottom:20px;"><h3>分帳結算 (HKD)</h3><div id="split-summary-area" style="margin-top:10px;"></div></div>
+                <div class="split-list" id="split-list"></div>
+                <div class="fab-add" onclick="window.app.openAddSplitModal()"><i class="fas fa-plus"></i></div>
+            </div>
+            <div id="tab-food" class="tab-content" style="padding: 20px;">
+                <h3>美食清單</h3><div id="food-list-container" style="margin-top:15px;"></div>
+                <div class="fab-add" onclick="window.app.openAddSpotModal()"><i class="fas fa-plus"></i></div>
+            </div>
+            <div id="tab-shopping" class="tab-content" style="padding: 20px;">
+                <h3>購物清單</h3><div id="shopping-list" class="shopping-list-grid" style="margin-top:15px;"></div>
+                <div class="fab-add" onclick="window.app.openAddShoppingModal()"><i class="fas fa-plus"></i></div>
+            </div>
+            <div id="tab-info" class="tab-content" style="padding: 20px;">
+                <div id="info-cards-container"></div>
+                <button class="btn-section-add" style="width:100%; margin-bottom:20px; padding:15px; justify-content:center;" onclick="window.app.openAddInfoModal()">+ 新增資訊</button>
+                <div class="backup-section">
+                    <button class="btn-backup" onclick="window.app.exportData()">備份</button>
+                    <textarea id="import-area" class="input-floating" rows="2" placeholder="代碼..."></textarea>
+                    <button class="btn-restore" onclick="window.app.importData()">還原</button>
+                </div>
+                <textarea id="info-memo" class="input-floating" style="height:150px; margin-top:20px;" placeholder="筆記..." onchange="window.app.saveMemo()"></textarea>
+            </div>
+        </div>
+
+        <nav class="bottom-nav">
+            <div class="nav-item active" onclick="window.app.switchTab('itinerary', this)"><i class="fas fa-list-ul"></i><span>行程</span></div>
+            <div class="nav-item" onclick="window.app.switchTab('map', this)"><i class="fas fa-map-marked-alt"></i><span>地圖</span></div>
+            <div class="nav-item" onclick="window.app.switchTab('budget', this)"><i class="fas fa-wallet"></i><span>記帳</span></div>
+            <div class="nav-item" onclick="window.app.switchTab('split', this)"><i class="fas fa-hand-holding-usd"></i><span>分帳</span></div>
+            <div class="nav-item" onclick="window.app.switchTab('food', this)"><i class="fas fa-utensils"></i><span>美食</span></div>
+            <div class="nav-item" onclick="window.app.switchTab('shopping', this)"><i class="fas fa-shopping-bag"></i><span>購物</span></div>
+            <div class="nav-item" onclick="window.app.switchTab('info', this)"><i class="fas fa-info-circle"></i><span>資訊</span></div>
+        </nav>
+    </div>
+
+<script type="module">
+
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, getDoc, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    const emojiList = [
+        '🇯🇵','🇹🇼','🇰🇷','🇹🇭','🇺🇸','🇬🇧','🇪🇺','🇫🇷','🇮🇹','🇪🇸','🇩🇪','🇨🇳','🇭🇰','🇻🇳','🇸🇬','🇲🇾','🇦🇺','🇨🇦',
+        '🏯','⛩️','🗼','🎡','🎢','🏰','🗺️','🏦','🏨','🏛️','🌉','🗽','🎪','🎭','🎨','🎳','🎰',
+        '🍱','🍣','🍜','🍵','🍻','🍷','🎂','🎁','🍔','🍕','🌭','🥪','🌮','🥩','🍗','🥟','🥠','🍦','🍩','☕','🍹',
+        '🏖️','🏔️','🏕️','🏜️','🏝️','🌋','🌲','🍂','🌸','🍁','❄️','☀️','🌊',
+        '✈️','🚂','🚅','🚗','🛳️','🚌','🚲',
+        '🎒','📷','🕶️','🧢','👟','👙','🌂','💼','📱','💻','🔌','🔋','💊','🩹','🧼','🪥','🧸','🪁'
+    ];
+
+    const colorPalette = [
+        {c:'#708090'}, {c:'#D4AF37'}, {c:'#E0BBE4'}, {c:'#957DAD'}, {c:'#FEC8D8'},
+        {c:'#88B04B'}, {c:'#FF6F61'}, {c:'#34495e'}, {c:'#FF9AA2'}, {c:'#FFB7B2'},
+        {c:'#FFDAC1'}, {c:'#E2F0CB'}, {c:'#B5EAD7'}, {c:'#C7CEEA'}, {c:'#F49AC2'},
+        {c:'#CB997E'}, {c:'#DDBEA9'}, {c:'#A5A58D'}, {c:'#6B705C'}, {c:'#118AB2'}
+    ];
+
+    const currencyMap = { '台灣':{s:'NT$'}, '日本':{s:'¥'}, 'Korea':{s:'₩'}, 'Thailand':{s:'฿'}, 'USA':{s:'$'}, 'UK':{s:'£'}, 'Europe':{s:'€'} };
+    const defaultCurrency = {s:'¥'};
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAaYnwtPuTV2f1bLL9VjwnfTWUFpsCSHeI",
+      authDomain: "journeycrafter-9b247.firebaseapp.com",
+      projectId: "journeycrafter-9b247",
+      storageBucket: "journeycrafter-9b247.firebasestorage.app",
+      messagingSenderId: "215948890940",
+      appId: "1:215948890940:web:d98b9e100b69936ac90439"
+    };
+
+    let db, auth, isReady=false;
+    let myTrips=[], allCache=[], subIds=JSON.parse(localStorage.getItem('sub_ids'))||[];
+    let currentTrip=null, dayIdx=0, editId=null, temp={cover:'',bg:'',icon:'',color:''};
+    let currentRate=0;
+    let expenseChart = null;
+    let markersLayer = null;
+    const tripUnsubs = new Map();
+
+    function showToast(msg) {
+        const toast = document.createElement('div');
+        toast.className = 'toast-msg';
+        toast.innerText = msg;
+        document.getElementById('toast-container').appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+
+    function normalizeId(id) {
+        return String(id || '').trim();
+    }
+
+    function rememberId(id) {
+        const did = normalizeId(id);
+        if (!did) return;
+        if (!subIds.includes(did)) {
+            subIds.push(did);
+            localStorage.setItem('sub_ids', JSON.stringify(subIds));
+        }
+    }
+
+    function forgetId(id) {
+        const did = normalizeId(id);
+        subIds = subIds.filter(x => String(x) !== did);
+        localStorage.setItem('sub_ids', JSON.stringify(subIds));
+        const unsub = tripUnsubs.get(did);
+        if (unsub) { unsub(); tripUnsubs.delete(did); }
+    }
+
+    function generateTripId() {
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        let id = '';
+        for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)];
+        return id;
+    }
+
+    function tripDocId(t) {
+        return normalizeId(t && (t.docId || t.customId));
+    }
+
+    function escapeHtml(s) {
+        return String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    async function geocodeAddress(query) {
+        if (!query) return null;
+        let cleanQuery = query
+            .replace(/[\{\}\[\]]/g, ' ')
+            .replace(/\s+\d+F($|\s)/gi, ' ')
+            .replace(/\s+B\d+($|\s)/gi, ' ')
+            .replace(/\s+\d+階($|\s)/g, ' ')
+            .replace(/\s+\d+樓\s*/g, '')
+            .replace(/[−－]/g, '-')
+            .trim()
+            .replace(/,/g, ' ');
+        const searchCandidates = [cleanQuery];
+        if (/〒|\d{3}-\d{4}/.test(cleanQuery)) {
+            searchCandidates.push(cleanQuery.replace(/〒?\s*\d{3}[-]?\d{4}/g, '').trim());
+        }
+        if (/Japan/i.test(cleanQuery)) {
+            searchCandidates.push(cleanQuery.replace(/Japan/ig, '').trim());
+        }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        try {
+            for (const q of searchCandidates) {
+                if (!q) continue;
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`;
+                const response = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
+                if (!response.ok) continue;
+                const data = await response.json();
+                if (data && data.length > 0) {
+                    clearTimeout(timeoutId);
+                    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+                }
+            }
+        } catch (e) {
+            console.warn("Geocoding skipped/failed:", e);
+        } finally {
+             clearTimeout(timeoutId);
+        }
+        return null;
+    }
+
+    const getAvatar = (name) => {
+        const n = name || "?";
+        const colorIndex = n.length % colorPalette.length;
+        const color = colorPalette[colorIndex].c;
+        const initial = n.charAt(0).toUpperCase();
+        return `<div class="user-avatar" style="background:${color}">${initial}</div>`;
+    };
+
+    const renderDayNav = () => {
+        const nav = document.getElementById('day-nav-container');
+        if(!nav) return;
+        nav.innerHTML="";
+        const pre=document.createElement('div');
+        pre.className=`day-chip-square pre-trip ${dayIdx===-1?'active':''}`;
+        pre.innerHTML=`<span class="d-label">行前檢查</span><span class="d-date" style="font-size:0.7rem;"><i class="fas fa-check"></i></span>`;
+        pre.onclick=()=>{dayIdx=-1; app.refreshView();};
+        nav.appendChild(pre);
+        if(!currentTrip) return;
+        const start = new Date(currentTrip.start);
+        for(let i=0; i<currentTrip.days; i++) {
+            const d=document.createElement('div');
+            d.className=`day-chip-square ${dayIdx===i?'active':''}`;
+            const cd = new Date(start);
+            cd.setDate(start.getDate()+i);
+            d.innerHTML=`<span class="d-label">Day ${i+1}</span><span class="d-date">${cd.getMonth()+1}/${cd.getDate()}</span>`;
+            d.onclick=()=>{dayIdx=i; app.refreshView();};
+            nav.appendChild(d);
+        }
+    };
+
+    const renderPreTrip = () => {
+        const c = document.getElementById('timeline-view');
+        if(!c) return;
+        c.innerHTML = "";
+        if(!currentTrip) return;
+        if(!currentTrip.checklists || currentTrip.checklists.length === 0) {
+            currentTrip.checklists = [{ title: "行前檢查", items: ["購買旅遊保險", "購買網卡 / SIM卡", "兌換貨幣"] }];
+        }
+        currentTrip.checklists.forEach((l,i) => {
+            c.innerHTML += `<div class="pre-trip-section"><div class="pre-trip-header">${escapeHtml(l.title)}<button class="btn-section-add" onclick="window.app.addChecklistItem(${i})">+</button></div>${(l.items||[]).map((it,j)=>`<div class="checklist-item" onclick="window.app.editChecklistItem(${i},${j})"><span>${escapeHtml(it)}</span><i class="fas fa-trash" onclick="window.app.deleteChecklistItem(event,${i},${j})"></i></div>`).join('')}</div>`;
+        });
+        c.innerHTML += `<div style="text-align:center; margin-top:20px;"><button class="btn-section-add" style="margin:0 auto;" onclick="window.app.addNewChecklist()">+ 新增清單</button></div>`;
+    };
+
+    const renderDayItinerary = (idx) => {
+        const c = document.getElementById('timeline-view');
+        if(!c) return;
+        c.innerHTML="";
+        if(!currentTrip) return;
+        const d = new Date(currentTrip.start);
+        d.setDate(d.getDate()+idx);
+        const dateStr=d.toISOString().split('T')[0];
+        const searchQuery = encodeURIComponent(`weather ${currentTrip.title} 攝氏`);
+        const wUrl = `https://www.google.com/search?q=${searchQuery}`;
+        c.innerHTML += `<div class="weather-card" onclick="window.open('${wUrl}','_blank')"><div class="weather-left"><i class="fas fa-cloud-sun weather-icon" style="font-size:2rem;"></i><div><div class="weather-temp">查看天氣</div><div class="weather-desc">${dateStr} (點擊查看 °C)</div></div></div><div><i class="fas fa-chevron-right"></i></div></div>`;
+
+        if(idx===0 || idx===currentTrip.days-1) {
+            const fls = (currentTrip.flights||[]).filter(f=>f.dayIndex===idx);
+            if(fls.length) {
+                fls.forEach(f => {
+                    c.innerHTML += `<div class="flight-card-v2"><div class="fc-top"><span class="fc-tag">FLIGHT</span><span class="fc-time">${escapeHtml(f.dep||'')}</span></div><div class="fc-code">${escapeHtml(f.from||'')} → ${escapeHtml(f.to||'')}</div><div class="fc-bottom"><div class="fc-info">${escapeHtml(f.no||'')}</div></div></div>`;
+                });
+            } else {
+                c.innerHTML += `<div style="text-align:center;color:#ccc;margin-bottom:10px;"><button class="btn-section-add" style="margin:0 auto;" onclick="window.app.openAddFlightModal()">新增航班</button></div>`;
+            }
+        }
+
+        const ss = (currentTrip.spots||[]).filter(s=>s.dayIndex===idx);
+        ss.forEach(s => {
+            let detailsHtml = '';
+            if(s.address) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-map-marker-alt" style="width:15px;text-align:center;"></i> ${escapeHtml(s.address)}</div>`;
+            if(s.phone) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-phone" style="width:15px;text-align:center;"></i> ${escapeHtml(s.phone)}</div>`;
+            if(s.link) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-link" style="width:15px;text-align:center;"></i> <a href="${escapeHtml(s.link)}" target="_blank" onclick="event.stopPropagation()">預約/連結</a></div>`;
+            if(s.web) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-globe" style="width:15px;text-align:center;"></i> <a href="${escapeHtml(s.web)}" target="_blank" onclick="event.stopPropagation()">官方網站</a></div>`;
+            c.innerHTML += `<div class="schedule-card" onclick="window.app.openEditSpotModal(${s.id})"><div class="sc-main"><div class="sc-left"><div class="sc-time">${escapeHtml(s.time||'')}</div></div><div class="sc-right"><div class="sc-title">${escapeHtml(s.title||'')}</div></div><div class="sc-tools"><div class="sc-tool-btn" onclick="event.stopPropagation(); window.app.deleteSpot(${s.id})"><i class="fas fa-trash"></i></div></div></div>${detailsHtml ? `<div class="sc-details-block">${detailsHtml}</div>` : ''}</div>`;
+        });
+        c.innerHTML += `<button class="btn-section-add" style="margin:10px auto;" onclick="window.app.openAddSpotModal()">+ 景點</button>`;
+    };
+
+    const renderShoppingList = () => {
+        const c=document.getElementById('shopping-list');
+        if(!c) return;
+        c.innerHTML="";
+        if(!currentTrip) return;
+        if(!currentTrip.shoppingList || currentTrip.shoppingList.length === 0) { c.innerHTML = "<div class='empty-state'>點擊 + 新增購物清單</div>"; return; }
+        currentTrip.shoppingList.forEach(s => {
+            const imgStyle = s.image ? `background-image:url('${s.image}')` : `background:#eee`;
+            c.innerHTML += `<div class="shopping-card" onclick="window.app.openAddShoppingModal(${s.id})"><div class="shop-img" style="${imgStyle}"></div><div class="shop-content"><div class="shop-name">${escapeHtml(s.name)}</div><div class="shop-price">HK$${escapeHtml(s.priceHKD||'0')}</div></div><div class="card-tools" style="top:10px;right:10px;"><div class="btn-card-tool" style="width:30px;height:30px;" onclick="event.stopPropagation();window.app.deleteShoppingItem(${s.id})"><i class="fas fa-trash"></i></div></div></div>`;
+        });
+    };
+
+    const renderBudget = () => {
+        const c=document.getElementById('expense-list'); c.innerHTML="";
+        const wCont = document.getElementById('wallet-list-container'); wCont.innerHTML="";
+        if(!currentTrip) return;
+        const cur = currentTrip.currency || defaultCurrency;
+        (currentTrip.wallets||[]).forEach(w => {
+            const spent = (currentTrip.expenses||[]).filter(e=>e.walletId===w.id).reduce((a,x)=>a+Number(x.amount||0),0);
+            wCont.innerHTML += `<div class="wallet-card"><div><div class="wallet-name">${escapeHtml(w.name)}</div><div class="wallet-balance">${cur.s}${(w.initialBalance-spent).toLocaleString()}</div></div><div class="wallet-tools"><div class="wallet-tool-btn" onclick="window.app.openEditWalletModal(${w.id})"><i class="fas fa-pen"></i></div><div class="wallet-tool-btn" onclick="window.app.deleteWallet(${w.id})"><i class="fas fa-trash"></i></div></div></div>`;
+        });
+        wCont.innerHTML += `<div class="wallet-card wallet-add" onclick="window.app.openAddWalletModal()">+ 新增</div>`;
+        const expenses = currentTrip.expenses||[];
+        expenses.forEach(e => {
+            c.innerHTML += `<div class="expense-item"><div class="expense-left"><div class="expense-icon-box"><i class="fas fa-${escapeHtml(e.category||'utensils')}"></i></div><div class="expense-info"><div class="expense-name">${escapeHtml(e.name)}</div></div></div><div class="expense-right"><div class="expense-amount">${cur.s}${Number(e.amount||0).toLocaleString()}</div><div class="item-actions"><div class="action-btn" onclick="window.app.openAddExpenseModal(${e.id})"><i class="fas fa-pen"></i></div><div class="action-btn delete" onclick="event.stopPropagation(); window.app.deleteExpense(${e.id})"><i class="fas fa-trash"></i></div></div></div></div>`;
+        });
+        const total = expenses.reduce((sum, e) => sum + Number(e.amount||0), 0);
+        document.getElementById('budget-total-display').innerText = `${cur.s}${total.toLocaleString()}`;
+        if (expenseChart) expenseChart.destroy();
+        const ctx = document.getElementById('expenseChart').getContext('2d');
+        const categories = {};
+        expenses.forEach(e => { categories[e.category] = (categories[e.category] || 0) + Number(e.amount||0); });
+        if (Object.keys(categories).length > 0) {
+             expenseChart = new Chart(ctx, { type: 'doughnut', data: { labels: Object.keys(categories), datasets: [{ data: Object.values(categories), backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'], borderWidth: 0 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } } });
+        }
+    };
+
+    const renderSplitBill = () => {
+        const c=document.getElementById('split-list'); c.innerHTML="";
+        if(!currentTrip) return;
+        (currentTrip.splitItems||[]).forEach(s => {
+            c.innerHTML += `<div class="split-item"><div class="split-item-left"><h4>${escapeHtml(s.name)}</h4><span><i class="fas fa-user"></i> 付款人: ${escapeHtml(s.payer)}</span></div><div class="split-item-right"><div class="split-item-amount">HK$${Number(s.amount||0).toLocaleString()}</div><div style="display:flex; justify-content:flex-end; gap:5px; margin-top:5px;"><div class="action-btn" onclick="window.app.openAddSplitModal(${s.id})"><i class="fas fa-pen"></i></div><div class="action-btn" onclick="event.stopPropagation(); window.app.deleteSplitItem(${s.id})"><i class="fas fa-trash"></i></div></div></div></div>`;
+        });
+        const sSummary = document.getElementById('split-summary-area'); sSummary.innerHTML="";
+        let total=0; const paid={}; const names=new Set();
+        (currentTrip.splitItems||[]).forEach(i => { total+=parseFloat(i.amount)||0; names.add(i.payer); paid[i.payer]=(paid[i.payer]||0)+(parseFloat(i.amount)||0); });
+        if(names.size<2) { sSummary.innerHTML = `<div class="split-summary-card"><div style="font-size:1.1rem; opacity:0.8;">請新增更多成員</div><div style="margin-top:10px;">需兩人以上才能計算分帳</div></div>`; }
+        else {
+            const avg = total/names.size;
+            let summaryHTML = `<div class="split-summary-card"><div style="font-size:0.9rem; opacity:0.9;">總支出</div><div class="split-total-amount">HK$${Math.round(total).toLocaleString()}</div><div class="split-avg-label">平均每人 HK$${Math.round(avg).toLocaleString()}</div></div><div class="settlement-card"><h3 style="margin-bottom:15px; font-size:1.1rem; color:#333;">結算方案</h3>`;
+            let d=[], cr=[];
+            names.forEach(n => { const b=paid[n]-avg; if(b<-1) d.push({n,v:Math.abs(b)}); else if(b>1) cr.push({n,v:b}); });
+            let i=0, j=0;
+            while(i<d.length && j<cr.length){
+                const m=Math.min(d[i].v, cr[j].v);
+                summaryHTML += `<div class="debt-row"><div class="debt-user-block">${getAvatar(d[i].n)}<div class="debt-user-name">${escapeHtml(d[i].n)}</div></div><div class="debt-visual">給 <i class="fas fa-long-arrow-alt-right debt-arrow"></i></div><div class="debt-user-block">${getAvatar(cr[j].n)}<div class="debt-user-name">${escapeHtml(cr[j].n)}</div></div><div class="debt-amount">HK$${Math.round(m).toLocaleString()}</div></div>`;
+                d[i].v-=m; cr[j].v-=m; if(d[i].v<1) i++; if(cr[j].v<1) j++;
+            }
+            summaryHTML += `</div>`;
+            sSummary.innerHTML=summaryHTML;
+        }
+    };
+
+    const renderFoodList = () => {
+        const c=document.getElementById('food-list-container'); c.innerHTML="";
+        if(!currentTrip) return;
+        const foods = (currentTrip.spots||[]).filter(s=>s.icon==='utensils');
+        if(!foods.length) { c.innerHTML = "<div class='empty-state'>尚無餐廳</div>"; return; }
+        foods.forEach(f => {
+            c.innerHTML += `<div class="schedule-card" onclick="window.app.openEditSpotModal(${f.id})"><div class="sc-main"><div class="sc-left"><div class="sc-time">${escapeHtml(f.time||'')}</div></div><div class="sc-right"><div class="sc-title">${escapeHtml(f.title||'')}</div></div><div class="sc-tools"><div class="sc-tool-btn" onclick="event.stopPropagation(); window.app.deleteSpot(${f.id})"><i class="fas fa-trash"></i></div></div></div>${f.address ? `<div class="sc-details-block"><div class="sc-detail-row"><i class="fas fa-map-marker-alt"></i> ${escapeHtml(f.address)}</div></div>` : ''}</div>`;
+        });
+    };
+
+    const renderInfoTab = () => {
+        const c=document.getElementById('info-cards-container'); c.innerHTML="";
+        if(!currentTrip) return;
+        (currentTrip.infoCards||[]).forEach(ic => {
+            c.innerHTML += `<div class="info-card" onclick="window.app.openAddInfoModal(${ic.id})"><div class="info-header">${escapeHtml(ic.title)} <div class="action-btn" onclick="event.stopPropagation(); window.app.deleteInfoCard(${ic.id})"><i class="fas fa-trash"></i></div></div>${ic.image ? `<div class="info-img-box" style="background-image:url('${ic.image}')"></div>` : ''}<div class="info-body">${escapeHtml(ic.detail||'')}</div></div>`;
+        });
+        document.getElementById('info-memo').value = currentTrip.memo||"";
+    };
+
+    const app = {
+        pendingDelete: null,
+
+        toast: showToast,
+
+        copyTripId: async (id, ev) => {
+            if (ev) ev.stopPropagation();
+            const did = normalizeId(id);
+            if (!did) return;
+            try {
+                await navigator.clipboard.writeText(did);
+                showToast('已複製旅行編號：' + did);
+            } catch (e) {
+                showToast('旅行編號：' + did);
+            }
+        },
+
+        goHome: () => {
+            document.getElementById('main-app').classList.remove('active');
+            const home = document.getElementById('home-screen');
+            home.classList.remove('hidden');
+            home.style.display = '';
+            app.renderTripList();
+        },
+
+        switchTab: (id, el) => {
+            document.querySelectorAll('.tab-content').forEach(d=>d.classList.remove('active'));
+            document.getElementById('tab-'+id).classList.add('active');
+            document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+            el.classList.add('active');
+            if(id==='map') setTimeout(() => { app.initMap(); }, 200);
+            app.refreshView();
+        },
+
+        handleFabClick: () => {
+            const tab = document.querySelector('.tab-content.active').id;
+            if(tab==='tab-itinerary'||tab==='tab-food') app.openAddSpotModal();
+            else if(tab==='tab-budget') app.openAddExpenseModal();
+            else if(tab==='tab-split') app.openAddSplitModal();
+            else if(tab==='tab-shopping') app.openAddShoppingModal();
+        },
+
+        openCreateModal: () => {
+            editId=null;
+            document.querySelector('#create-trip-modal h2').innerText="規劃新旅程";
+            const btn = document.getElementById('btn-save-trip');
+            btn.innerText="建立";
+            btn.disabled = false;
+            document.getElementById('input-custom-id').disabled = false;
+            ['input-custom-id','input-title','input-desc'].forEach(i=>{document.getElementById(i).value=''});
+            document.getElementById('input-start').valueAsDate=new Date();
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            document.getElementById('input-end').valueAsDate=tomorrow;
+            document.getElementById('cover-preview').style.display='none';
+            document.getElementById('bg-preview').style.display='none';
+            temp = {cover:'',bg:'',icon:'✈️',color:'#708090'};
+            app.initUI();
+            document.getElementById('create-trip-modal').classList.add('active');
+        },
+        closeCreateModal: () => document.getElementById('create-trip-modal').classList.remove('active'),
+        openJoinModal: () => document.getElementById('join-trip-modal').classList.add('active'),
+        closeJoinModal: () => document.getElementById('join-trip-modal').classList.remove('active'),
+        openAddFlightModal: () => document.getElementById('add-flight-modal').classList.add('active'),
+        closeFlightModal: () => document.getElementById('add-flight-modal').classList.remove('active'),
+        openAddSpotModal: () => {
+            document.getElementById('spot-id').value = "";
+            document.getElementById('spot-modal-title').innerText="新增景點";
+            ['spot-title','spot-address','spot-phone','spot-link','spot-web'].forEach(i=>document.getElementById(i).value='');
+            document.getElementById('add-spot-modal').classList.add('active');
+        },
+        closeSpotModal: () => document.getElementById('add-spot-modal').classList.remove('active'),
+        openAddWalletModal: () => {
+            document.getElementById('wallet-id').value = "";
+            document.getElementById('wallet-name').value = "";
+            document.getElementById('wallet-balance').value = "";
+            document.getElementById('wallet-modal-title').innerText="新增錢包";
+            document.getElementById('add-wallet-modal').classList.add('active');
+        },
+        closeWalletModal: () => document.getElementById('add-wallet-modal').classList.remove('active'),
+        openEditWalletModal: (id) => {
+            const w = (currentTrip.wallets||[]).find(x => x.id === id);
+            if(!w) return;
+            document.getElementById('wallet-id').value = w.id;
+            document.getElementById('wallet-name').value = w.name;
+            document.getElementById('wallet-balance').value = w.initialBalance;
+            document.getElementById('wallet-modal-title').innerText="編輯錢包";
+            document.getElementById('add-wallet-modal').classList.add('active');
+        },
+        openConfirmModal: (msg, action) => {
+            document.getElementById('confirm-msg').innerText = msg;
+            app.pendingDelete = action;
+            document.getElementById('confirm-modal').classList.add('active');
+        },
+        closeConfirmModal: () => {
+            document.getElementById('confirm-modal').classList.remove('active');
+            app.pendingDelete = null;
+        },
+        confirmAction: () => {
+            if (app.pendingDelete) app.pendingDelete();
+            app.closeConfirmModal();
+        },
+        openAddExpenseModal: (id) => {
+            if(!currentTrip.wallets?.length) return alert("請先建立錢包");
+            const sel=document.getElementById('expense-wallet');
+            sel.innerHTML="";
+            currentTrip.wallets.forEach(w=>{
+                const o=document.createElement('option');
+                o.value=w.id;
+                o.text=w.name;
+                sel.appendChild(o);
+            });
+            if(id) {
+                const e = currentTrip.expenses.find(x=>x.id===id);
+                document.getElementById('expense-id').value=id;
+                document.getElementById('expense-name').value=e.name;
+                document.getElementById('expense-amount').value=e.amount;
+                document.getElementById('expense-category').value=e.category||'utensils';
+                document.getElementById('expense-wallet').value=e.walletId;
+                document.getElementById('expense-modal-title').innerText="編輯支出";
+            } else {
+                document.getElementById('expense-id').value="";
+                document.getElementById('expense-name').value="";
+                document.getElementById('expense-amount').value="";
+                document.getElementById('expense-modal-title').innerText="新增支出";
+            }
+            document.getElementById('add-expense-modal').classList.add('active');
+        },
+        closeExpenseModal: () => document.getElementById('add-expense-modal').classList.remove('active'),
+        openAddSplitModal: (id) => {
+            if(id) {
+                const s = currentTrip.splitItems.find(x=>x.id===id);
+                document.getElementById('split-id').value=id;
+                document.getElementById('split-name').value=s.name;
+                document.getElementById('split-payer').value=s.payer;
+                document.getElementById('split-amount').value=s.amount;
+                document.getElementById('split-modal-title').innerText="編輯分帳";
+            } else {
+                document.getElementById('split-id').value="";
+                document.getElementById('split-name').value="";
+                document.getElementById('split-payer').value="";
+                document.getElementById('split-amount').value="";
+                document.getElementById('split-modal-title').innerText="新增分帳";
+            }
+            document.getElementById('add-split-modal').classList.add('active');
+        },
+        closeSplitModal: () => document.getElementById('add-split-modal').classList.remove('active'),
+        openAddShoppingModal: (id) => {
+            app.resetImg('shop');
+            if(id) {
+                const s = currentTrip.shoppingList.find(x=>x.id===id);
+                document.getElementById('shop-id').value=id;
+                document.getElementById('shop-name').value=s.name;
+                document.getElementById('shop-desc').value=s.desc || '';
+                document.getElementById('shop-price-hkd').value=s.priceHKD||'';
+                document.getElementById('shop-price-local').value=s.priceLocal||'';
+                if(s.image) {
+                    temp.shop=s.image;
+                    document.getElementById('shop-preview').style.backgroundImage=`url('${s.image}')`;
+                    document.getElementById('shop-preview').style.display='block';
+                }
+                document.getElementById('shop-modal-title').innerText="編輯物品";
+            } else {
+                ['shop-id','shop-name','shop-desc','shop-price-hkd','shop-price-local'].forEach(i=>document.getElementById(i).value='');
+                document.getElementById('shop-modal-title').innerText="新增物品";
+            }
+            document.getElementById('add-shopping-modal').classList.add('active');
+        },
+        closeShoppingModal: () => document.getElementById('add-shopping-modal').classList.remove('active'),
+        openAddInfoModal: (id) => {
+            app.resetImg('info');
+            if(id) {
+                const c = currentTrip.infoCards.find(x=>x.id===id);
+                document.getElementById('info-id').value=id;
+                document.getElementById('info-title').value=c.title;
+                document.getElementById('info-detail').value=c.detail;
+                document.getElementById('info-type').value=c.type||'other';
+                if(c.image) {
+                    temp.info=c.image;
+                    document.getElementById('info-preview').style.backgroundImage=`url('${c.image}')`;
+                    document.getElementById('info-preview').style.display='block';
+                }
+                document.getElementById('info-modal-title').innerText="編輯資訊";
+            } else {
+                ['info-id','info-title','info-detail'].forEach(i=>document.getElementById(i).value='');
+                document.getElementById('info-modal-title').innerText="新增資訊卡片";
+            }
+            document.getElementById('add-info-modal').classList.add('active');
+        },
+        closeInfoModal: () => document.getElementById('add-info-modal').classList.remove('active'),
+
+        upsertLocalTrip: (t) => {
+            const did = tripDocId(t);
+            const idx = myTrips.findIndex(x => tripDocId(x)===did || x.id===t.id);
+            if (idx>-1) myTrips[idx]=t; else myTrips.unshift(t);
+            try { localStorage.setItem('trips', JSON.stringify(myTrips)); } catch(e) { console.warn(e); }
+            const cidx = allCache.findIndex(x => tripDocId(x)===did);
+            if (cidx>-1) allCache[cidx]=t; else if (did) allCache.push(t);
+        },
+
+        saveTrip: async (t) => {
+            const did = tripDocId(t);
+            if (did) t.docId = did;
+            app.upsertLocalTrip(t);
+            if(isReady && did) {
+                const payload = {...t};
+                await setDoc(doc(db, 'trips', did), payload, { merge: true });
+            }
+            if(currentTrip && (tripDocId(currentTrip)===did || currentTrip.id===t.id)) {
+                currentTrip=t;
+                app.refreshView();
+            }
+            app.renderTripList();
+        },
+
+        submitTripForm: async () => {
+            const title=document.getElementById('input-title').value.trim();
+            const start=document.getElementById('input-start').value;
+            const end=document.getElementById('input-end').value;
+            if(!title||!start||!end) return alert("請填寫完整");
+            const btn = document.getElementById('btn-save-trip');
+            btn.innerText = "處理中...";
+            btn.disabled = true;
+            const days = Math.ceil((new Date(end)-new Date(start))/86400000)+1;
+            let cur = defaultCurrency;
+            for(let k in currencyMap) if(title.includes(k)) cur=currencyMap[k];
+
+            try {
+                if(editId) {
+                    let t = app.getTripById(editId);
+                    if(t) {
+                        Object.assign(t, {
+                            title, start, end, days:days>0?days:1,
+                            desc:document.getElementById('input-desc').value,
+                            cover:temp.cover||t.cover, bg:temp.bg||t.bg,
+                            themeColor:temp.color||t.themeColor, icon:temp.icon||t.icon
+                        });
+                        await app.saveTrip(t);
+                        app.closeCreateModal();
+                        showToast('已儲存');
+                    }
+                } else {
+                    let cid=normalizeId(document.getElementById('input-custom-id').value).replace(/\s+/g,'');
+                    if (!cid) {
+                        for (let n=0;n<8;n++) {
+                            cid = generateTripId();
+                            if (isReady) {
+                                const existing = await getDoc(doc(db, 'trips', cid));
+                                if (!existing.exists()) break;
+                            } else if (!app.getTripById(cid)) break;
+                        }
+                    } else if (isReady) {
+                        const existingDoc = await getDoc(doc(db, 'trips', cid));
+                        if(existingDoc.exists()) {
+                            alert("此編號已存在，請更換一個");
+                            return;
+                        }
+                    } else if (app.getTripById(cid)) {
+                        alert("此編號已存在，請更換一個");
+                        return;
+                    }
+
+                    const newT = {
+                        id:Date.now(), title, start, end, days:days>0?days:1,
+                        cover:temp.cover||'', bg:temp.bg||'',
+                        themeColor:temp.color||'#708090', icon:temp.icon||'✈️', currency:cur,
+                        flights:[], spots:[], shoppingList:[], expenses:[], wallets:[], splitItems:[], infoCards:[], checklists: [],
+                        docId: cid, customId: cid
+                    };
+                    rememberId(cid);
+                    if(isReady) {
+                        await setDoc(doc(db, 'trips', cid), newT);
+                        app.watchTrip(cid);
+                    }
+                    app.upsertLocalTrip(newT);
+                    app.closeCreateModal();
+                    await app.copyTripId(cid);
+                    showToast('已建立，旅行編號：' + cid);
+                    app.openApp(newT);
+                }
+            } catch(e) {
+                console.error(e);
+                alert("儲存失敗，已先保存在此裝置。\n" + (e.message||e));
+                isReady = false;
+                document.getElementById('sync-status').className='offline';
+            } finally {
+                btn.innerText = editId ? "儲存" : "建立";
+                btn.disabled = false;
+                app.renderTripList();
+            }
+        },
+
+        joinTrip: async () => {
+            const id = normalizeId(document.getElementById('input-join-id').value);
+            if (!id) return alert('請輸入旅行編號');
+            const btn = document.querySelector('#join-trip-modal .btn-primary');
+            const old = btn.innerText;
+            btn.innerText = '載入中...';
+            btn.disabled = true;
+            try {
+                let t = null;
+                if (isReady) {
+                    const snap = await getDoc(doc(db, 'trips', id));
+                    if (snap.exists()) t = { ...snap.data(), docId: id, customId: id };
+                }
+                if (!t) t = app.getTripById(id);
+                if (!t) {
+                    alert('找不到此編號。請確認編號無誤，或檢查網絡後再試。');
+                    return;
+                }
+                rememberId(id);
+                app.upsertLocalTrip(t);
+                if (isReady) app.watchTrip(id);
+                app.closeJoinModal();
+                document.getElementById('input-join-id').value = '';
+                showToast('已載入行程：' + (t.title||id));
+                app.renderTripList();
+                app.openApp(t);
+            } catch (e) {
+                console.error(e);
+                alert('加入失敗：' + (e.message||e));
+            } finally {
+                btn.innerText = old;
+                btn.disabled = false;
+            }
+        },
+
+        watchTrip: (id) => {
+            const did = normalizeId(id);
+            if (!isReady || !did || tripUnsubs.has(did)) return;
+            const unsub = onSnapshot(doc(db, 'trips', did), (snap) => {
+                if (!snap.exists()) return;
+                const t = { ...snap.data(), docId: did, customId: did };
+                app.upsertLocalTrip(t);
+                if (currentTrip && tripDocId(currentTrip)===did) {
+                    currentTrip = t;
+                    app.refreshView();
+                }
+                app.renderTripList();
+            }, (err) => console.warn('watch failed', did, err));
+            tripUnsubs.set(did, unsub);
+        },
+
+        watchAllKnown: () => {
+            subIds.forEach(id => app.watchTrip(id));
+        },
+
+        getTripById: (id) => {
+            const target = normalizeId(id);
+            return allCache.find(x => tripDocId(x)===target) || myTrips.find(x => tripDocId(x)===target || String(x.id)===target);
+        },
+
+        loadTrip: (id) => {
+            const t = app.getTripById(id);
+            if(t) app.openApp(t);
+            else if (isReady) app.joinFromId(id);
+            else alert('找不到此行程');
+        },
+
+        joinFromId: async (id) => {
+            document.getElementById('input-join-id').value = id;
+            await app.joinTrip();
+        },
+
+        saveSpot: async () => {
+            const title=document.getElementById('spot-title').value;
+            if(!title) return;
+            const btn = document.getElementById('btn-save-spot');
+            const originalText = btn.innerText;
+            btn.innerText = "處理中...";
+            btn.disabled = true;
+            try {
+                const idVal=document.getElementById('spot-id').value;
+                const address = document.getElementById('spot-address').value;
+                let coords = {};
+                if(address) {
+                    const geo = await geocodeAddress(address);
+                    if(geo) coords = geo;
+                }
+                if(!coords.lat && title) {
+                     const geoTitle = await geocodeAddress(title);
+                     if(geoTitle) coords = geoTitle;
+                }
+                const spot = {
+                    id: idVal?parseInt(idVal):Date.now(),
+                    dayIndex: Math.max(dayIdx, 0),
+                    time:document.getElementById('spot-time').value,
+                    title,
+                    icon:document.getElementById('spot-icon').value,
+                    address,
+                    phone:document.getElementById('spot-phone').value,
+                    link:document.getElementById('spot-link').value,
+                    web:document.getElementById('spot-web').value,
+                    ...coords
+                };
+                if(!currentTrip.spots) currentTrip.spots=[];
+                if(idVal) {
+                    const i=currentTrip.spots.findIndex(x=>x.id==idVal);
+                    if(i>-1) currentTrip.spots[i]=spot;
+                } else currentTrip.spots.push(spot);
+                currentTrip.spots.sort((a,b)=>String(a.time||'').localeCompare(String(b.time||'')));
+                await app.saveTrip(currentTrip);
+                if (coords.lat && window.journeyMap) {
+                    app.initMap();
+                    window.journeyMap.flyTo([coords.lat, coords.lng], 16);
+                }
+                app.closeSpotModal();
+            } catch (error) {
+                console.error("Save failed:", error);
+                alert("儲存失敗，請稍後再試。");
+            } finally {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        },
+        deleteSpot: (id) => {
+            app.openConfirmModal("確定刪除此景點?", () => {
+                currentTrip.spots = currentTrip.spots.filter(x => x.id !== id);
+                app.saveTrip(currentTrip);
+            });
+        },
+        openEditSpotModal: (id) => {
+            const s = currentTrip.spots.find(x=>x.id===id);
+            if(!s) return;
+            document.getElementById('spot-id').value=s.id;
+            document.getElementById('spot-title').value=s.title;
+            document.getElementById('spot-time').value=s.time;
+            document.getElementById('spot-icon').value=s.icon;
+            document.getElementById('spot-address').value=s.address || '';
+            document.getElementById('spot-phone').value=s.phone || '';
+            document.getElementById('spot-link').value=s.link || '';
+            document.getElementById('spot-web').value=s.web || '';
+            document.getElementById('spot-modal-title').innerText="編輯景點";
+            document.getElementById('add-spot-modal').classList.add('active');
+        },
+        deleteWallet: (id) => {
+            app.openConfirmModal("確定刪除此錢包？", () => {
+                currentTrip.wallets = currentTrip.wallets.filter(x => x.id !== id);
+                app.saveTrip(currentTrip);
+            });
+        },
+        saveWallet: () => {
+            const name=document.getElementById('wallet-name').value;
+            if(!name) return;
+            if(!currentTrip.wallets) currentTrip.wallets=[];
+            const idVal = document.getElementById('wallet-id').value;
+            const wallet = { id: idVal ? parseInt(idVal) : Date.now(), name, initialBalance:parseFloat(document.getElementById('wallet-balance').value)||0 };
+            if(idVal) {
+                const i = currentTrip.wallets.findIndex(x=>x.id==idVal);
+                if(i>-1) currentTrip.wallets[i] = wallet;
+            } else currentTrip.wallets.push(wallet);
+            app.saveTrip(currentTrip);
+            app.closeWalletModal();
+        },
+        deleteExpense: (id) => {
+            app.openConfirmModal("確定刪除此支出?", () => {
+                currentTrip.expenses = currentTrip.expenses.filter(x => x.id !== id);
+                app.saveTrip(currentTrip);
+            });
+        },
+        saveExpense: () => {
+            const id=document.getElementById('expense-id').value;
+            const amt=parseFloat(document.getElementById('expense-amount').value);
+            if(isNaN(amt)) return alert("請輸入金額");
+            const exp = { id: id?parseInt(id):Date.now(), name:document.getElementById('expense-name').value||'一般', amount:amt, category:document.getElementById('expense-category').value, walletId:parseInt(document.getElementById('expense-wallet').value), date:new Date().toISOString() };
+            if(!currentTrip.expenses) currentTrip.expenses=[];
+            if(id) {
+                const i=currentTrip.expenses.findIndex(x=>x.id==id);
+                if(i>-1) currentTrip.expenses[i]=exp;
+            } else currentTrip.expenses.push(exp);
+            app.saveTrip(currentTrip);
+            app.closeExpenseModal();
+        },
+        deleteSplitItem: (id) => {
+            app.openConfirmModal("確定刪除此分帳項目?", () => {
+                currentTrip.splitItems = currentTrip.splitItems.filter(x => x.id !== id);
+                app.saveTrip(currentTrip);
+            });
+        },
+        saveSplitItem: () => {
+            const id=document.getElementById('split-id').value;
+            const amt=parseFloat(document.getElementById('split-amount').value);
+            if(isNaN(amt)) return;
+            const item = { id: id?parseInt(id):Date.now(), name:document.getElementById('split-name').value, payer:document.getElementById('split-payer').value, amount:amt };
+            if(!currentTrip.splitItems) currentTrip.splitItems=[];
+            if(id) {
+                const i=currentTrip.splitItems.findIndex(x=>x.id==id);
+                if(i>-1) currentTrip.splitItems[i]=item;
+            } else currentTrip.splitItems.push(item);
+            app.saveTrip(currentTrip);
+            app.closeSplitModal();
+        },
+        deleteShoppingItem: (id) => {
+            app.openConfirmModal("確定刪除此購物項目?", () => {
+                currentTrip.shoppingList = currentTrip.shoppingList.filter(x => x.id !== id);
+                app.saveTrip(currentTrip);
+            });
+        },
+        saveShoppingItem: () => {
+            const id=document.getElementById('shop-id').value;
+            const name=document.getElementById('shop-name').value;
+            if(!name) return;
+            const item = { id: id?parseInt(id):Date.now(), name, desc:document.getElementById('shop-desc').value, priceHKD:document.getElementById('shop-price-hkd').value, priceLocal:document.getElementById('shop-price-local').value, image:temp.shop||'' };
+            if(!currentTrip.shoppingList) currentTrip.shoppingList=[];
+            if(id) {
+                const i=currentTrip.shoppingList.findIndex(x=>x.id==id);
+                if(i>-1) currentTrip.shoppingList[i]=item;
+            } else currentTrip.shoppingList.push(item);
+            app.saveTrip(currentTrip);
+            app.closeShoppingModal();
+        },
+        deleteInfoCard: (id) => {
+            app.openConfirmModal("確定刪除此資訊卡片?", () => {
+                currentTrip.infoCards = currentTrip.infoCards.filter(x => x.id !== id);
+                app.saveTrip(currentTrip);
+            });
+        },
+        saveInfoCard: () => {
+            const id=document.getElementById('info-id').value;
+            const title=document.getElementById('info-title').value;
+            if(!title) return;
+            const card = { id: id?parseInt(id):Date.now(), type:document.getElementById('info-type').value, title, detail:document.getElementById('info-detail').value, image:temp.info||'' };
+            if(!currentTrip.infoCards) currentTrip.infoCards=[];
+            if(id) {
+                const i=currentTrip.infoCards.findIndex(x=>x.id==id);
+                if(i>-1) currentTrip.infoCards[i]=card;
+            } else currentTrip.infoCards.push(card);
+            app.saveTrip(currentTrip);
+            app.closeInfoModal();
+        },
+        saveMemo: () => { currentTrip.memo = document.getElementById('info-memo').value; app.saveTrip(currentTrip); },
+        addChecklistItem: (i) => { const t=prompt("輸入檢查項目"); if(t){ if(!currentTrip.checklists[i].items) currentTrip.checklists[i].items = []; currentTrip.checklists[i].items.push(t); app.saveTrip(currentTrip); app.refreshView(); } },
+        editChecklistItem: (i, j) => { const oldVal = currentTrip.checklists[i].items[j]; const newVal = prompt("編輯項目", oldVal); if (newVal !== null && newVal.trim() !== "") { currentTrip.checklists[i].items[j] = newVal; app.saveTrip(currentTrip); app.refreshView(); } },
+        deleteChecklistItem: (e,i,j) => { e.stopPropagation(); app.openConfirmModal("確定刪除此檢查項目?", () => { currentTrip.checklists[i].items.splice(j,1); app.saveTrip(currentTrip); app.refreshView(); }); },
+        addNewChecklist: () => { const t=prompt("輸入清單名稱"); if(t){ if(!currentTrip.checklists) currentTrip.checklists=[]; currentTrip.checklists.push({title:t,items:[]}); app.saveTrip(currentTrip); app.refreshView(); } },
+        saveFlight: () => {
+            const from=document.getElementById('flight-from').value; if(!from) return;
+            if(!currentTrip.flights) currentTrip.flights=[];
+            currentTrip.flights.push({ id:Date.now(), dayIndex: Math.max(dayIdx,0), from, to:document.getElementById('flight-to').value, no:document.getElementById('flight-no').value, dep:document.getElementById('flight-dep-time').value, arr:document.getElementById('flight-arr-time').value });
+            app.saveTrip(currentTrip); app.closeFlightModal();
+        },
+        deleteTrip: (e, id) => {
+            e.stopPropagation();
+            const t = app.getTripById(id);
+            if(!t) return;
+            app.openConfirmModal("確定移除此旅行？（只係喺呢部裝置隱藏，雲端資料會保留，之後可用編號再加入）", () => {
+                const did = tripDocId(t) || String(t.id);
+                forgetId(did);
+                myTrips = myTrips.filter(x => tripDocId(x) !== did && String(x.id) !== String(t.id));
+                allCache = allCache.filter(x => tripDocId(x) !== did);
+                try { localStorage.setItem('trips', JSON.stringify(myTrips)); } catch(err){}
+                app.renderTripList();
+            });
+        },
+        openEditTripModal: (e, id) => {
+            e.stopPropagation();
+            const t = app.getTripById(id);
+            if(!t) return;
+            editId = tripDocId(t) || t.id;
+            document.querySelector('#create-trip-modal h2').innerText="編輯旅程";
+            document.getElementById('btn-save-trip').innerText="儲存";
+            document.getElementById('btn-save-trip').disabled=false;
+            document.getElementById('input-custom-id').value = tripDocId(t);
+            document.getElementById('input-custom-id').disabled = true;
+            document.getElementById('input-title').value=t.title;
+            document.getElementById('input-start').value=t.start;
+            document.getElementById('input-end').value=t.end;
+            document.getElementById('input-desc').value=t.desc || '';
+            temp.icon = t.icon; temp.color = t.themeColor; temp.cover = t.cover; temp.bg = t.bg;
+            if (t.cover) { document.getElementById('cover-preview').style.backgroundImage=`url('${t.cover}')`; document.getElementById('cover-preview').style.display='block'; }
+            if (t.bg) { document.getElementById('bg-preview').style.backgroundImage=`url('${t.bg}')`; document.getElementById('bg-preview').style.display='block'; }
+            app.initUI();
+            document.getElementById('create-trip-modal').classList.add('active');
+        },
+        handleImageUpload: (input, type) => {
+            if(input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const res = e.target.result;
+                    if(type==='cover') temp.cover=res;
+                    else if(type==='bg') temp.bg=res;
+                    else if(type==='shop') temp.shop=res;
+                    else if(type==='info') temp.info=res;
+                    const prev = document.getElementById(type==='bg'?'bg-preview':(type==='cover'?'cover-preview':(type==='shop'?'shop-preview':'info-preview')));
+                    if(prev) { prev.style.backgroundImage=`url('${res}')`; prev.style.display='block'; }
+                };
+                reader.readAsDataURL(input.files[0]);
+            }
+        },
+        resetImg: (type) => {
+            if(type==='shop'){ temp.shop=''; document.getElementById('shop-preview').style.display='none'; }
+            else if(type==='info'){ temp.info=''; document.getElementById('info-preview').style.display='none'; }
+        },
+        initUI: () => {
+            const c1=document.getElementById('icon-selector'); c1.innerHTML="";
+            emojiList.forEach(e=>{ const d=document.createElement('div'); d.className='icon-option'; if(e === temp.icon) d.classList.add('selected'); d.innerText=e; d.onclick=function() { temp.icon=e; document.querySelectorAll('.icon-option').forEach(el=>el.classList.remove('selected')); this.classList.add('selected'); }; c1.appendChild(d); });
+            const c2=document.getElementById('color-selector'); c2.innerHTML="";
+            colorPalette.forEach(c=>{ const d=document.createElement('div'); d.className='color-option'; if(c.c === temp.color) d.classList.add('selected'); d.style.backgroundColor=c.c; d.onclick=function() { temp.color=c.c; document.querySelectorAll('.color-option').forEach(el=>el.classList.remove('selected')); this.classList.add('selected'); }; c2.appendChild(d); });
+            const amt=document.getElementById('expense-amount');
+            if(amt && !amt._bound) {
+                amt._bound = true;
+                amt.addEventListener('input', function(){ if(currentRate && this.value) { const hkd = (parseFloat(this.value) * currentRate).toFixed(1); document.getElementById('expense-hkd-hint').innerText=`約 HK$ ${hkd}`; } });
+            }
+        },
+        openApp: (trip) => {
+            currentTrip = trip; dayIdx=0;
+            const home = document.getElementById('home-screen');
+            home.classList.add('hidden');
+            document.getElementById('main-app').classList.add('active');
+            document.documentElement.style.setProperty('--primary', trip.themeColor||'#708090');
+            document.documentElement.style.setProperty('--accent', trip.themeColor||'#D4AF37');
+            document.getElementById('app-title-display').innerHTML = '<span style="margin-right:8px;">' + (trip.icon||'') + '</span>' + escapeHtml(trip.title||'');
+            const code = tripDocId(trip);
+            document.getElementById('app-code-display').innerHTML = code ? `編號 ${escapeHtml(code)} <i class="fas fa-copy" style="cursor:pointer" onclick="window.app.copyTripId('${escapeHtml(code)}')"></i>` : '';
+            const bg = document.getElementById('main-app-bg');
+            if(trip.bg) { bg.style.backgroundImage=`url('${trip.bg}')`; document.getElementById('main-app').style.backgroundColor='transparent'; }
+            else { bg.style.backgroundImage='none'; document.getElementById('main-app').style.backgroundColor=(trip.themeColor||'#708090')+'10'; }
+            app.refreshView();
+            setTimeout(() => { app.initMap(); if(window.journeyMap) window.journeyMap.invalidateSize(); }, 200);
+        },
+        refreshView: () => {
+            const activeNav = document.querySelector('.nav-item.active');
+            if(!activeNav) return;
+            const tab = activeNav.getAttribute('onclick').match(/'([^']+)'/)[1];
+            if(tab==='itinerary') { renderDayNav(); if(dayIdx===-1) renderPreTrip(); else renderDayItinerary(dayIdx); }
+            else if(tab==='shopping') renderShoppingList();
+            else if(tab==='budget') renderBudget();
+            else if(tab==='split') renderSplitBill();
+            else if(tab==='food') renderFoodList();
+            else if(tab==='info') renderInfoTab();
+        },
+        renderTripList: () => {
+            const c=document.getElementById('trip-list');
+            if (!c) return;
+            const byId = new Map();
+            [...allCache, ...myTrips].forEach(t => {
+                const id = tripDocId(t) || String(t.id);
+                if (!subIds.length || subIds.includes(id) || myTrips.some(x => x===t || tripDocId(x)===id)) {
+                    if (!byId.has(id)) byId.set(id, t);
+                }
+            });
+            let trips = [...byId.values()];
+            if (subIds.length) {
+                const preferred = trips.filter(t => subIds.includes(tripDocId(t)));
+                if (preferred.length) trips = preferred;
+            }
+            if(trips.length === 0) {
+                c.innerHTML = `<div style="text-align:center; padding:40px; color:#999;"><i class="fas fa-suitcase-rolling" style="font-size:3rem; margin-bottom:20px;"></i><p>還沒有任何旅行計劃</p><p>按右上角「新增」開始規劃，或按「加入」輸入旅行編號睇返行程</p></div>`;
+                return;
+            }
+            c.innerHTML = "";
+            trips.forEach((t) => {
+                const bgStyle = t.cover ? `background-image:url('${t.cover}')` : `background:linear-gradient(135deg, ${t.themeColor||'#708090'} 0%, #2c3e50 100%)`;
+                const idParam = tripDocId(t) || String(t.id);
+                c.innerHTML += `<div class="trip-card-item" onclick="window.app.loadTrip('${escapeHtml(idParam)}')"><div class="tc-image" style="${bgStyle}"><div class="card-tools"><div class="btn-card-tool" onclick="event.stopPropagation(); window.app.openEditTripModal(event, '${escapeHtml(idParam)}')"><i class="fas fa-edit"></i></div><div class="btn-card-tool" onclick="event.stopPropagation(); window.app.deleteTrip(event, '${escapeHtml(idParam)}')"><i class="fas fa-trash"></i></div></div></div><div class="tc-content"><div class="tc-title">${t.icon || ''} ${escapeHtml(t.title||'')}</div><div class="tc-meta-row"><span><i class="far fa-calendar"></i> ${escapeHtml(t.start||'')} ~ ${escapeHtml(t.end||'')}</span><span><i class="far fa-clock"></i> ${t.days||1}天</span></div><div class="trip-code-chip" onclick="window.app.copyTripId('${escapeHtml(idParam)}', event)"><i class="fas fa-key"></i> 編號 ${escapeHtml(idParam)} <button type="button" aria-label="複製"><i class="fas fa-copy"></i></button></div></div></div>`;
+            });
+        },
+        filterTrips: () => app.renderTripList(),
+        initMap: () => {
+            const mapEl = document.getElementById('map');
+            if(mapEl && !window.journeyMap) {
+                mapEl.style.height = '100%';
+                window.journeyMap = L.map('map').setView([35.68, 139.76], 5);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(window.journeyMap);
+            }
+            if (window.journeyMap) {
+                if (markersLayer) { markersLayer.clearLayers(); } else { markersLayer = L.layerGroup().addTo(window.journeyMap); }
+                if(currentTrip && currentTrip.spots) {
+                    const bounds = [];
+                    currentTrip.spots.forEach(spot => {
+                        if(spot.lat && spot.lng) {
+                            const dayNum = (spot.dayIndex||0) + 1;
+                            const customIcon = L.divIcon({ className: 'custom-div-icon', html: `<div class="custom-map-marker">${dayNum}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+                            const marker = L.marker([spot.lat, spot.lng], {icon: customIcon}).bindPopup(`<div style="text-align:center;"><b>${escapeHtml(spot.title||'')}</b><br><span style="font-size:0.8rem;color:#666;">Day ${dayNum} - ${escapeHtml(spot.time||'')}</span><br>${escapeHtml(spot.address || '')}</div>`);
+                            markersLayer.addLayer(marker);
+                            bounds.push([spot.lat, spot.lng]);
+                        }
+                    });
+                    if(bounds.length > 0) window.journeyMap.fitBounds(bounds, {padding: [50, 50], maxZoom: 15});
+                }
+                window.journeyMap.invalidateSize();
+            }
+        },
+        closeSettlementModal: () => document.getElementById('settle-up-modal').classList.remove('active'),
+        openSettlementModal: () => {
+            renderSplitBill();
+            const dest = document.getElementById('settlement-results');
+            dest.innerHTML = document.getElementById('split-summary-area').innerHTML;
+            document.getElementById('settle-up-modal').classList.add('active');
+        },
+        exportData: () => {
+            if (!currentTrip) return;
+            const payload = JSON.stringify({ docId: tripDocId(currentTrip), trip: currentTrip });
+            document.getElementById('import-area').value = payload;
+            app.copyTripId(tripDocId(currentTrip) || '');
+            showToast('已產生備份代碼');
+        },
+        importData: async () => {
+            const raw = document.getElementById('import-area').value.trim();
+            if (!raw) return alert('請貼上備份代碼');
+            try {
+                const data = JSON.parse(raw);
+                const trip = data.trip || data;
+                const did = normalizeId(data.docId || trip.docId || trip.customId) || generateTripId();
+                trip.docId = did; trip.customId = did;
+                rememberId(did);
+                await app.saveTrip(trip);
+                showToast('已還原，編號：' + did);
+                app.openApp(trip);
+            } catch (e) {
+                alert('還原失敗，請檢查代碼');
+            }
+        }
+    };
+
+    window.app = app;
+
+    (async function() {
+        try { myTrips = JSON.parse(localStorage.getItem('trips'))||[]; } catch(err){ myTrips=[]; }
+        app.initUI();
+        app.renderTripList();
+
+        try {
+            const appInit = initializeApp(firebaseConfig);
+            auth = getAuth(appInit);
+            db = getFirestore(appInit);
+            await signInAnonymously(auth);
+            onAuthStateChanged(auth, async (u) => {
+                if(u) {
+                    isReady=true;
+                    document.getElementById('sync-status').className='online';
+                    for (const id of subIds) {
+                        try {
+                            const snap = await getDoc(doc(db, 'trips', id));
+                            if (snap.exists()) app.upsertLocalTrip({ ...snap.data(), docId: id, customId: id });
+                        } catch (e) { console.warn(e); }
+                    }
+                    app.watchAllKnown();
+                    app.renderTripList();
+                    if (currentTrip && tripDocId(currentTrip)) {
+                        const t = app.getTripById(tripDocId(currentTrip));
+                        if (t) { currentTrip = t; app.refreshView(); }
+                    }
+                }
+            });
+        } catch(e) {
+            isReady=false;
+            document.getElementById('sync-status').className='offline';
+            app.renderTripList();
+            showToast('離線模式：資料先存在此裝置');
+        }
+
+        document.getElementById('input-join-id').addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') app.joinTrip();
+        });
+        document.addEventListener('visibilitychange', () => { if(!document.hidden) app.refreshView(); });
+    })();
+</script>
+</body>
+</html>
