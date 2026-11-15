@@ -213,6 +213,8 @@
         #chart-container { width: 80%; margin: 0 auto 20px auto; max-height: 250px; }
         .custom-map-marker { background-color: var(--accent); color: white; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 2px solid white; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3); font-size: 0.9rem; }
         .header-code { font-size: 0.75rem; color: #888; font-weight: 500; }
+        .header-peers { font-size: 0.68rem; color: #999; font-weight: 500; margin-top: 2px; max-width: min(72vw, 320px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
+        .peer-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #3cb371; margin-left: 3px; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -242,6 +244,10 @@
                 <div class="form-section">
                     <div class="section-title">標題</div>
                     <input type="text" id="input-title" class="input-floating" placeholder="例如：日本京都">
+                </div>
+                <div class="form-section">
+                    <div class="section-title">你的名稱（朋友會見到）</div>
+                    <input type="text" id="input-creator-name" class="input-floating" placeholder="例如：Niki（留空會顯示為同伴）">
                 </div>
                 <div class="form-section">
                     <div class="section-title">目的地（選填，用於自動連結天氣）</div>
@@ -279,8 +285,12 @@
         <div class="modal-content">
             <div class="creator-form">
                 <div class="modal-header"><h2>用編號加入行程</h2></div>
-                <p style="color:#666;margin-top:0;">輸入旅行編號，就可以喺任何裝置睇返同一個行程。</p>
+                <p style="color:#666;margin-top:0;">輸入旅行編號，就可以喺任何裝置睇返同一個行程。唔使同一個 Wi-Fi。</p>
                 <input type="text" id="input-join-id" class="input-floating" placeholder="輸入旅行編號...">
+                <div class="form-section">
+                    <div class="section-title">你的名稱（朋友會見到）</div>
+                    <input type="text" id="input-join-name" class="input-floating" placeholder="例如：Niki（留空會顯示為同伴）">
+                </div>
             </div>
             <div class="creator-actions">
                 <button class="btn-cancel" onclick="window.app.closeJoinModal()">取消</button>
@@ -477,6 +487,7 @@
             <div style="font-weight:700; color: var(--text-main); display: flex; flex-direction: column; align-items: center; min-width:0;">
                 <div id="app-title-display">Title</div>
                 <div class="header-code" id="app-code-display"></div>
+                <div class="header-peers" id="app-peers-display"></div>
             </div>
             <div style="width: 20px;"></div>
         </header>
@@ -561,10 +572,14 @@
     const CLOUD_CHANNEL_PREFIX = 'travelweb-v1-';
     const PUBNUB_REST_ORIGIN = 'https://ps.pndsn.com';
     const REST_POLL_MS = 2000;
-    const HISTORY_FETCH_COUNT = 50;
+    const HISTORY_FETCH_COUNT = 100;
     const PUBLISH_RETRIES = 3;
     const PUBLISH_DEBOUNCE_MS = 400;
     const DEVICE_UUID_KEY = 'travelweb_uuid';
+    const DISPLAY_NAME_KEY = 'travelweb_name';
+    const DEFAULT_DISPLAY_NAME = '同伴';
+    const PRESENCE_HEARTBEAT_MS = 25000;
+    const PRESENCE_ONLINE_MS = 45000;
     const PUBNUB_MAX_BYTES = 30000;
 
     let isReady=false;
@@ -578,6 +593,9 @@
     let markersLayer = null;
     const watchedIds = new Set();
     const publishTimers = new Map();
+    const publishChains = new Map();
+    const toastedCollabIds = new Set();
+    let presenceTimer = null;
 
     function showToast(msg) {
         const toast = document.createElement('div');
@@ -688,6 +706,9 @@
         return t;
     }
 
+    // --- merge-helpers-start ---
+    const TRIP_LIST_KEYS = ['spots', 'flights', 'shoppingList', 'expenses', 'wallets', 'splitItems', 'infoCards', 'checklists'];
+
     function isBlankImage(v) {
         return v == null || v === '' || v === '[omitted]';
     }
@@ -702,7 +723,7 @@
             if (!Array.isArray(remoteList) || !Array.isArray(localList)) return remoteList;
             return remoteList.map((item) => {
                 if (!item || !isBlankImage(item.image)) return item;
-                const prev = localList.find((x) => x && x.id === item.id);
+                const prev = localList.find((x) => x && String(x.id) === String(item.id));
                 if (prev && prev.image) return Object.assign({}, item, { image: prev.image });
                 return item;
             });
@@ -716,6 +737,462 @@
         if (!t) return 0;
         return Number(t.updatedAt || t.ts || 0) || 0;
     }
+
+    function cloneTrip(trip) {
+        if (!trip) return trip;
+        try { return JSON.parse(JSON.stringify(trip)); }
+        catch (e) { return Object.assign({}, trip); }
+    }
+
+    function itemTs(item, fallback) {
+        if (!item || typeof item !== 'object') return Number(fallback) || 0;
+        return Number(item.updatedAt || item.ts || fallback || 0) || 0;
+    }
+
+    function hashStr(s) {
+        let h = 5381;
+        const str = String(s || '');
+        for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i);
+        return (h >>> 0).toString(36);
+    }
+
+    function stableItemId(listKey, item) {
+        const type = (item && item.type) || '';
+        const title = (item && (item.title || item.name || item.from || item.text)) || '';
+        const time = (item && (item.time || item.dep)) || '';
+        const address = (item && (item.address || item.to)) || '';
+        const dayIndex = (item && item.dayIndex != null) ? String(item.dayIndex) : '';
+        return 'fp_' + hashStr([listKey, type, title, time, address, dayIndex].join('\0'));
+    }
+
+    function sameId(a, b) {
+        return String(a) === String(b);
+    }
+
+    function ensureItemId(listKey, item) {
+        if (!item || typeof item !== 'object') return item;
+        if (item.id == null || item.id === '') item.id = stableItemId(listKey, item);
+        return item;
+    }
+
+    function checklistItemText(it) {
+        if (it == null) return '';
+        if (typeof it === 'string') return it;
+        return String(it.text || it.title || '');
+    }
+
+    function normalizeChecklistItems(listOrChecklist) {
+        const items = Array.isArray(listOrChecklist) ? listOrChecklist : ((listOrChecklist && listOrChecklist.items) || []);
+        return items.map((it) => {
+            if (typeof it === 'string') {
+                return { id: stableItemId('checklistItems', { title: it }), text: it };
+            }
+            if (it && typeof it === 'object') {
+                const out = Object.assign({}, it);
+                if (out.text == null && typeof out.title === 'string') out.text = out.title;
+                ensureItemId('checklistItems', out);
+                return out;
+            }
+            return it;
+        });
+    }
+
+    function ensureTripIds(trip) {
+        if (!trip || typeof trip !== 'object') return trip;
+        TRIP_LIST_KEYS.forEach((key) => {
+            if (!Array.isArray(trip[key])) return;
+            trip[key].forEach((item) => {
+                if (!item || typeof item !== 'object') return;
+                ensureItemId(key, item);
+                if (key === 'checklists') item.items = normalizeChecklistItems(item);
+            });
+        });
+        return trip;
+    }
+
+    function mergeRemovedMaps(a, b) {
+        const out = {};
+        const keys = new Set([].concat(Object.keys(a || {}), Object.keys(b || {}), TRIP_LIST_KEYS, ['checklistItems']));
+        keys.forEach((list) => {
+            const am = (a && a[list]) || {};
+            const bm = (b && b[list]) || {};
+            const ids = new Set([].concat(Object.keys(am), Object.keys(bm)));
+            if (!ids.size) return;
+            out[list] = {};
+            ids.forEach((id) => {
+                out[list][id] = Math.max(Number(am[id] || 0) || 0, Number(bm[id] || 0) || 0);
+            });
+        });
+        return out;
+    }
+
+    function isItemRemoved(removed, listKey, item, fallbackTs) {
+        if (!removed || !removed[listKey] || !item) return false;
+        const id = (item && typeof item === 'object') ? item.id : item;
+        const rts = Number(removed[listKey][String(id)] || 0) || 0;
+        if (!rts) return false;
+        return rts >= itemTs(item, fallbackTs);
+    }
+
+    function visibleList(trip, listKey) {
+        const list = (trip && trip[listKey]) || [];
+        const removed = (trip && trip.removed) || {};
+        const fallback = localTripTs(trip);
+        return list.filter((item) => item && !isItemRemoved(removed, listKey, item, fallback));
+    }
+
+    function safeJson(v) {
+        try { return JSON.stringify(v) || ''; }
+        catch (e) { return ''; }
+    }
+
+    function pickNewerItem(a, aParent, b, bParent) {
+        const at = itemTs(a, aParent);
+        const bt = itemTs(b, bParent);
+        let winner = a;
+        let loser = b;
+        if (bt > at) { winner = b; loser = a; }
+        else if (bt === at) {
+            const as = safeJson(a);
+            const bs = safeJson(b);
+            if (bs > as) { winner = b; loser = a; }
+        }
+        const out = Object.assign({}, winner);
+        if (loser && typeof loser === 'object') {
+            if (isBlankImage(out.image) && loser.image) out.image = loser.image;
+            if (isBlankImage(out.cover) && loser.cover) out.cover = loser.cover;
+        }
+        return out;
+    }
+
+    function mergeListById(listKey, aList, bList, aParentTs, bParentTs, removed) {
+        const map = new Map();
+        const put = (item, parentTs) => {
+            if (item == null) return;
+            let obj = item;
+            if (listKey === 'checklistItems' && typeof item === 'string') {
+                obj = { id: stableItemId('checklistItems', { title: item }), text: item };
+            }
+            if (typeof obj !== 'object') return;
+            obj = Object.assign({}, obj);
+            if (listKey === 'checklists') obj.items = normalizeChecklistItems(obj);
+            ensureItemId(listKey, obj);
+            const id = String(obj.id);
+            const prev = map.get(id);
+            if (!prev) {
+                map.set(id, { item: obj, parentTs: parentTs });
+                return;
+            }
+            let picked;
+            if (listKey === 'checklists') {
+                picked = pickNewerItem(prev.item, prev.parentTs, obj, parentTs);
+                picked.items = mergeListById(
+                    'checklistItems',
+                    normalizeChecklistItems(prev.item),
+                    normalizeChecklistItems(obj),
+                    itemTs(prev.item, prev.parentTs),
+                    itemTs(obj, parentTs),
+                    removed
+                );
+            } else {
+                picked = pickNewerItem(prev.item, prev.parentTs, obj, parentTs);
+            }
+            map.set(id, { item: picked, parentTs: Math.max(Number(prev.parentTs) || 0, Number(parentTs) || 0) });
+        };
+        (aList || []).forEach((it) => put(it, aParentTs));
+        (bList || []).forEach((it) => put(it, bParentTs));
+        const out = [];
+        map.forEach((rec) => {
+            if (isItemRemoved(removed, listKey, rec.item, rec.parentTs)) return;
+            out.push(rec.item);
+        });
+        return out;
+    }
+
+    function mergeCollaborators(a, b) {
+        const map = new Map();
+        const add = (c) => {
+            if (!c || c.id == null || c.id === '') return;
+            const id = String(c.id);
+            const incoming = Object.assign({}, c, { id: c.id });
+            const prev = map.get(id);
+            if (!prev) {
+                map.set(id, incoming);
+                return;
+            }
+            const prevSeen = Number(prev.lastSeen || 0) || 0;
+            const nextSeen = Number(incoming.lastSeen || 0) || 0;
+            const out = Object.assign({}, prev);
+            if (nextSeen >= prevSeen) {
+                out.lastSeen = nextSeen;
+                if (incoming.name) out.name = incoming.name;
+            } else if (!out.name && incoming.name) {
+                out.name = incoming.name;
+            }
+            const prevJoined = Number(prev.joinedAt || 0) || 0;
+            const nextJoined = Number(incoming.joinedAt || 0) || 0;
+            if (nextJoined && (!prevJoined || nextJoined < prevJoined)) out.joinedAt = nextJoined;
+            else if (prevJoined) out.joinedAt = prevJoined;
+            map.set(id, out);
+        };
+        (a || []).forEach(add);
+        (b || []).forEach(add);
+        return Array.from(map.values());
+    }
+
+    function unionSplitMembers(a, b) {
+        const out = [];
+        const seen = new Set();
+        [].concat(a || [], b || []).forEach((n) => {
+            const name = String(n || '').trim();
+            if (!name || seen.has(name)) return;
+            seen.add(name);
+            out.push(name);
+        });
+        return out;
+    }
+
+    function mergeTrips(a, b) {
+        if (!a && !b) return a;
+        if (!a) { const t = cloneTrip(b); ensureTripIds(t); return t; }
+        if (!b) { const t = cloneTrip(a); ensureTripIds(t); return t; }
+        const aN = ensureTripIds(cloneTrip(a));
+        const bN = ensureTripIds(cloneTrip(b));
+        const aTs = localTripTs(aN);
+        const bTs = localTripTs(bN);
+        const newer = aTs >= bTs ? aN : bN;
+        const older = aTs >= bTs ? bN : aN;
+        const skip = { removed: 1, collaborators: 1, splitMembers: 1 };
+        TRIP_LIST_KEYS.forEach((k) => { skip[k] = 1; });
+        const out = {};
+        Object.keys(older).forEach((k) => { if (!skip[k]) out[k] = older[k]; });
+        Object.keys(newer).forEach((k) => { if (!skip[k]) out[k] = newer[k]; });
+        if (isBlankImage(out.cover) && older.cover) out.cover = older.cover;
+        if (isBlankImage(out.bg) && older.bg) out.bg = older.bg;
+        const removed = mergeRemovedMaps(aN.removed, bN.removed);
+        TRIP_LIST_KEYS.forEach((key) => {
+            if (!Array.isArray(aN[key]) && !Array.isArray(bN[key])) return;
+            out[key] = mergeListById(key, aN[key] || [], bN[key] || [], aTs, bTs, removed);
+        });
+        out.splitMembers = unionSplitMembers(aN.splitMembers, bN.splitMembers);
+        out.collaborators = mergeCollaborators(aN.collaborators, bN.collaborators);
+        out.removed = removed;
+        out.updatedAt = Math.max(aTs, bTs);
+        if (aN.docId || bN.docId) out.docId = aN.docId || bN.docId;
+        if (aN.customId || bN.customId) out.customId = aN.customId || bN.customId;
+        return out;
+    }
+    // --- merge-helpers-end ---
+
+
+    function markItemRemoved(trip, listKey, id) {
+        if (!trip) return;
+        const sid = String(id);
+        if (!trip.removed) trip.removed = {};
+        if (!trip.removed[listKey]) trip.removed[listKey] = {};
+        trip.removed[listKey][sid] = Date.now();
+        if (Array.isArray(trip[listKey])) {
+            trip[listKey] = trip[listKey].filter((x) => x && String(x.id) !== sid);
+        }
+    }
+
+    function getStoredDisplayName() {
+        try {
+            return (localStorage.getItem(DISPLAY_NAME_KEY) || '').trim();
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function saveDisplayName(name) {
+        const n = String(name || '').trim();
+        try { if (n) localStorage.setItem(DISPLAY_NAME_KEY, n); } catch (e) {}
+        return n || DEFAULT_DISPLAY_NAME;
+    }
+
+    function displayNameOrDefault(name) {
+        const n = String(name || '').trim();
+        return n || DEFAULT_DISPLAY_NAME;
+    }
+
+    function prefillDisplayNameInputs() {
+        const stored = getStoredDisplayName();
+        const join = document.getElementById('input-join-name');
+        const create = document.getElementById('input-creator-name');
+        if (join) join.value = stored;
+        if (create) create.value = stored;
+    }
+
+    function upsertSelfCollaborator(trip, name) {
+        if (!trip) return trip;
+        const now = Date.now();
+        const display = displayNameOrDefault(name || getStoredDisplayName());
+        if (!trip.collaborators) trip.collaborators = [];
+        const idx = trip.collaborators.findIndex((c) => c && String(c.id) === String(DEVICE_UUID));
+        if (idx < 0) {
+            trip.collaborators.push({ id: DEVICE_UUID, name: display, joinedAt: now, lastSeen: now });
+        } else {
+            const c = trip.collaborators[idx];
+            c.name = display;
+            c.lastSeen = now;
+            if (!c.joinedAt) c.joinedAt = now;
+        }
+        return trip;
+    }
+
+    function rememberExistingCollaborators() {
+        (myTrips || []).forEach((t) => {
+            const did = tripDocId(t);
+            (t.collaborators || []).forEach((c) => {
+                if (c && c.id) toastedCollabIds.add(String(did) + ':' + String(c.id));
+            });
+        });
+    }
+
+    function notifyNewCollaborators(trip) {
+        if (!trip || !Array.isArray(trip.collaborators)) return;
+        const did = tripDocId(trip);
+        trip.collaborators.forEach((c) => {
+            if (!c || c.id == null || String(c.id) === String(DEVICE_UUID)) return;
+            const key = String(did) + ':' + String(c.id);
+            if (toastedCollabIds.has(key)) return;
+            toastedCollabIds.add(key);
+            showToast('「' + displayNameOrDefault(c.name) + ' 已加入行程」');
+        });
+    }
+
+    function updatePeersDisplay() {
+        const el = document.getElementById('app-peers-display');
+        if (!el) return;
+        if (!currentTrip) {
+            el.innerHTML = '';
+            return;
+        }
+        const list = currentTrip.collaborators || [];
+        if (!list.length) {
+            el.innerHTML = '';
+            return;
+        }
+        const now = Date.now();
+        const names = list.map((c) => {
+            const name = escapeHtml(displayNameOrDefault(c && c.name));
+            const online = c && c.lastSeen && (now - Number(c.lastSeen) <= PRESENCE_ONLINE_MS);
+            return online ? (name + '<span class="peer-dot" title="在線"></span>') : name;
+        });
+        el.innerHTML = '已加入：' + names.join('、');
+    }
+
+    function extractPresenceMessage(payload) {
+        if (!payload || typeof payload !== 'object') return null;
+        const msg = (payload.message && payload.type == null) ? payload.message : payload;
+        if (!msg || typeof msg !== 'object' || msg.type !== 'presence') return null;
+        const tripId = normalizeId(msg.tripId);
+        if (!tripId) return null;
+        return {
+            type: 'presence',
+            tripId,
+            sender: msg.sender || '',
+            name: displayNameOrDefault(msg.name),
+            ts: Number(msg.ts || 0) || 0,
+            action: msg.action || 'join'
+        };
+    }
+
+    function applyPresence(msg) {
+        if (!msg || !msg.tripId) return;
+        const did = normalizeId(msg.tripId);
+        const trip = (typeof app !== 'undefined' && app.getTripById) ? app.getTripById(did) : null;
+        if (!trip) return;
+        const id = msg.sender;
+        if (!id) return;
+        const name = displayNameOrDefault(msg.name);
+        const ts = Number(msg.ts) || Date.now();
+        if (!trip.collaborators) trip.collaborators = [];
+        const idx = trip.collaborators.findIndex((c) => c && String(c.id) === String(id));
+        const isNew = idx < 0;
+        if (isNew) {
+            trip.collaborators.push({ id, name, joinedAt: ts, lastSeen: ts });
+        } else {
+            const c = trip.collaborators[idx];
+            c.lastSeen = Math.max(Number(c.lastSeen || 0) || 0, ts);
+            if (msg.name && String(msg.name).trim()) c.name = name;
+            else if (!c.name) c.name = name;
+        }
+        if (typeof app !== 'undefined' && app.upsertLocalTrip) app.upsertLocalTrip(trip);
+        if (currentTrip && tripDocId(currentTrip) === did) {
+            currentTrip = trip;
+            updatePeersDisplay();
+        }
+        if (isNew) notifyNewCollaborators(trip);
+    }
+
+    function snapshotsEquivalent(a, b) {
+        if (!a && !b) return true;
+        if (!a || !b) return false;
+        if (localTripTs(a) !== localTripTs(b)) return false;
+        if (String(a.memo || '') !== String(b.memo || '')) return false;
+        if (String(a.title || '') !== String(b.title || '')) return false;
+        for (let i = 0; i < TRIP_LIST_KEYS.length; i++) {
+            const key = TRIP_LIST_KEYS[i];
+            const al = (a[key] || []).map((x) => x && String(x.id)).sort().join(',');
+            const bl = (b[key] || []).map((x) => x && String(x.id)).sort().join(',');
+            if (al !== bl) return false;
+        }
+        const ac = (a.collaborators || []).map((c) => c && String(c.id)).sort().join(',');
+        const bc = (b.collaborators || []).map((c) => c && String(c.id)).sort().join(',');
+        return ac === bc;
+    }
+
+    function enqueueTripPublish(did, task) {
+        const id = normalizeId(did);
+        const prev = publishChains.get(id) || Promise.resolve();
+        const next = prev.catch(() => false).then(task);
+        publishChains.set(id, next);
+        return next;
+    }
+
+    function publishPresence(did, action) {
+        const id = normalizeId(did);
+        if (!id) return Promise.resolve(false);
+        const envelope = {
+            type: 'presence',
+            tripId: id,
+            sender: DEVICE_UUID,
+            name: displayNameOrDefault(getStoredDisplayName()),
+            ts: Date.now(),
+            action: action || 'join'
+        };
+        return publishCloudReliable(id, envelope).then((ok) => {
+            if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
+            return ok;
+        }).catch(() => false);
+    }
+
+    function isTripScreenOpen() {
+        const el = document.getElementById('main-app');
+        return !!(currentTrip && el && el.classList.contains('active'));
+    }
+
+    function startPresenceHeartbeat() {
+        stopPresenceHeartbeat();
+        presenceTimer = setInterval(() => {
+            if (!isTripScreenOpen() || document.hidden) return;
+            const did = tripDocId(currentTrip);
+            if (!did) return;
+            upsertSelfCollaborator(currentTrip, getStoredDisplayName());
+            if (typeof app !== 'undefined' && app.upsertLocalTrip) app.upsertLocalTrip(currentTrip);
+            publishPresence(did, 'heartbeat');
+            updatePeersDisplay();
+        }, PRESENCE_HEARTBEAT_MS);
+    }
+
+    function stopPresenceHeartbeat() {
+        if (presenceTimer) {
+            clearInterval(presenceTimer);
+            presenceTimer = null;
+        }
+    }
+
 
     function extractTripMessage(payload) {
         if (!payload || typeof payload !== 'object') return null;
@@ -768,23 +1245,28 @@
         const local = app.getTripById(did);
         const incomingTs = Number(msg.ts || 0) || localTripTs(msg.trip);
         const currentTs = localTripTs(local);
-        if (local && incomingTs <= currentTs) return;
         if (msg.type === 'deleted' || msg.deleted) {
-            removeLocalTrip(did);
+            if (!local || incomingTs > currentTs) removeLocalTrip(did);
             return;
         }
         if (!msg.trip) return;
-        if (msg.sender && msg.sender === DEVICE_UUID && local && localTripTs(local)) return;
-        let t = Object.assign({}, msg.trip, {
+        let incoming = Object.assign({}, msg.trip, {
             docId: did,
             customId: did,
             updatedAt: incomingTs || msg.trip.updatedAt
         });
+        incoming = mergeLocalImages(incoming, local);
+        let t = local ? mergeTrips(local, incoming) : ensureTripIds(incoming);
         t = mergeLocalImages(t, local);
+        t.docId = did;
+        t.customId = did;
+        if (msg.sender && msg.sender === DEVICE_UUID && local && snapshotsEquivalent(local, t)) return;
+        notifyNewCollaborators(t);
         app.upsertLocalTrip(t);
         if (currentTrip && tripDocId(currentTrip) === did) {
             currentTrip = t;
             app.refreshView();
+            updatePeersDisplay();
         }
         app.renderTripList();
     }
@@ -802,7 +1284,10 @@
         pubnub.addListener({
             message: function (m) {
                 try {
-                    const msg = extractTripMessage(m && m.message);
+                    const raw = m && m.message;
+                    const pres = extractPresenceMessage(raw);
+                    if (pres) { applyPresence(pres); return; }
+                    const msg = extractTripMessage(raw);
                     if (msg) applyRemoteTrip(msg);
                 } catch (e) { console.warn(e); }
             },
@@ -849,32 +1334,55 @@
         return attempt();
     }
 
-    async function publishTripSnapshot(did, trip) {
-        const t = trip || app.getTripById(did);
-        if (!t || !did) return false;
-        const ts = localTripTs(t) || Date.now();
-        const makeEnvelope = (aggressive) => ({
-            type: 'trip',
-            ts,
-            tripId: did,
-            sender: DEVICE_UUID,
-            trip: stripTripForCloud(t, aggressive)
-        });
-        let envelope = makeEnvelope(false);
-        if (byteSize(envelope) > PUBNUB_MAX_BYTES) envelope = makeEnvelope(true);
-        let ok = false;
-        try {
-            ok = await publishCloudReliable(did, envelope);
-            if (!ok) {
-                envelope = makeEnvelope(true);
-                ok = await publishCloudReliable(did, envelope);
+    async function publishTripSnapshot(did, trip, options) {
+        const id = normalizeId(did);
+        const allowCreate = !!(options && (options.allowCreate || options.isOverwrite));
+        return enqueueTripPublish(id, async () => {
+            const localPending = trip || app.getTripById(id);
+            if (!localPending || !id) return false;
+            const latest = await fetchLatestTripSnapshot(id);
+            if (!allowCreate) {
+                if (!app.getTripById(id)) return false;
+                if (latest && latest.ok && latest.deleted) return false;
             }
-        } catch (e) {
-            console.warn(e);
-            ok = false;
-        }
-        if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
-        return ok;
+            let merged = ensureTripIds(cloneTrip(localPending));
+            if (latest && latest.ok && latest.trip && !latest.deleted) {
+                merged = mergeTrips(latest.trip, merged);
+                merged = mergeLocalImages(merged, localPending);
+            }
+            const ts = Math.max(Date.now(), ((latest && latest.ts) || 0) + 1);
+            merged.updatedAt = ts;
+            merged.docId = id;
+            merged.customId = id;
+            app.upsertLocalTrip(merged);
+            if (currentTrip && tripDocId(currentTrip) === id) {
+                currentTrip = merged;
+                app.refreshView();
+                updatePeersDisplay();
+            }
+            const makeEnvelope = (aggressive) => ({
+                type: 'trip',
+                ts,
+                tripId: id,
+                sender: DEVICE_UUID,
+                trip: stripTripForCloud(merged, aggressive)
+            });
+            let envelope = makeEnvelope(false);
+            if (byteSize(envelope) > PUBNUB_MAX_BYTES) envelope = makeEnvelope(true);
+            let ok = false;
+            try {
+                ok = await publishCloudReliable(id, envelope);
+                if (!ok) {
+                    envelope = makeEnvelope(true);
+                    ok = await publishCloudReliable(id, envelope);
+                }
+            } catch (e) {
+                console.warn(e);
+                ok = false;
+            }
+            if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
+            return ok;
+        });
     }
 
     function schedulePublishTrip(t) {
@@ -887,12 +1395,13 @@
         }, PUBLISH_DEBOUNCE_MS));
     }
 
-    function flushPublishTrip(did, t) {
-        if (publishTimers.has(did)) {
-            clearTimeout(publishTimers.get(did));
-            publishTimers.delete(did);
+    function flushPublishTrip(did, t, options) {
+        const id = normalizeId(did);
+        if (publishTimers.has(id)) {
+            clearTimeout(publishTimers.get(id));
+            publishTimers.delete(id);
         }
-        return publishTripSnapshot(did, t);
+        return publishTripSnapshot(id, t, options);
     }
 
     async function publishTripDeleted(did, ts) {
@@ -902,18 +1411,20 @@
             clearTimeout(publishTimers.get(id));
             publishTimers.delete(id);
         }
-        const envelope = {
-            type: 'deleted',
-            deleted: true,
-            ts: Number(ts) || Date.now(),
-            tripId: id,
-            sender: DEVICE_UUID
-        };
-        let ok = false;
-        try { ok = await publishCloudReliable(id, envelope); }
-        catch (e) { console.warn(e); ok = false; }
-        if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
-        return ok;
+        return enqueueTripPublish(id, async () => {
+            const envelope = {
+                type: 'deleted',
+                deleted: true,
+                ts: Number(ts) || Date.now(),
+                tripId: id,
+                sender: DEVICE_UUID
+            };
+            let ok = false;
+            try { ok = await publishCloudReliable(id, envelope); }
+            catch (e) { console.warn(e); ok = false; }
+            if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
+            return ok;
+        });
     }
 
     async function loadHistory(tripId) {
@@ -924,13 +1435,16 @@
         if (!r.ok) return { ok: false, messages: [] };
         const data = await r.json();
         const messages = [];
+        const presence = [];
         if (Array.isArray(data) && Array.isArray(data[0])) {
             data[0].forEach((payload) => {
+                const pres = extractPresenceMessage(payload);
+                if (pres) { presence.push(pres); return; }
                 const msg = extractTripMessage(payload);
                 if (msg) messages.push(msg);
             });
         }
-        return { ok: true, messages };
+        return { ok: true, messages, presence };
     }
 
     async function fetchLatestTripSnapshot(tripId) {
@@ -963,6 +1477,7 @@
                 if (!latest || (msg.ts || 0) >= (latest.ts || 0)) latest = msg;
             });
             if (latest) applyRemoteTrip(latest);
+            (res.presence || []).forEach((pres) => applyPresence(pres));
             if (!isReady) setSyncStatus(true, syncBackend || 'rest');
             return true;
         } catch (e) {
@@ -1299,10 +1814,13 @@
         c.innerHTML = "";
         if(!currentTrip) return;
         if(!currentTrip.checklists || currentTrip.checklists.length === 0) {
-            currentTrip.checklists = [{ title: "行前檢查", items: ["購買旅遊保險", "購買網卡 / SIM卡", "兌換貨幣"] }];
+            currentTrip.checklists = [{ id: 'default-pretrip', title: "行前檢查", items: ["購買旅遊保險", "購買網卡 / SIM卡", "兌換貨幣"] }];
         }
+        ensureTripIds(currentTrip);
         currentTrip.checklists.forEach((l,i) => {
-            c.innerHTML += `<div class="pre-trip-section"><div class="pre-trip-header">${escapeHtml(l.title)}<button class="btn-section-add" onclick="window.app.addChecklistItem(${i})">+</button></div>${(l.items||[]).map((it,j)=>`<div class="checklist-item" onclick="window.app.editChecklistItem(${i},${j})"><span>${escapeHtml(it)}</span><i class="fas fa-trash" onclick="window.app.deleteChecklistItem(event,${i},${j})"></i></div>`).join('')}</div>`;
+            if (isItemRemoved(currentTrip.removed, 'checklists', l, localTripTs(currentTrip))) return;
+            const items = (l.items || []).map((it,j) => ({ it, j })).filter(({ it }) => !isItemRemoved(currentTrip.removed, 'checklistItems', typeof it === 'object' ? it : { id: stableItemId('checklistItems', { title: it }), text: it }, localTripTs(currentTrip)));
+            c.innerHTML += `<div class="pre-trip-section"><div class="pre-trip-header">${escapeHtml(l.title)}<button class="btn-section-add" onclick="window.app.addChecklistItem(${i})">+</button></div>${items.map(({ it, j })=>`<div class="checklist-item" onclick="window.app.editChecklistItem(${i},${j})"><span>${escapeHtml(checklistItemText(it))}</span><i class="fas fa-trash" onclick="window.app.deleteChecklistItem(event,${i},${j})"></i></div>`).join('')}</div>`;
         });
         c.innerHTML += `<div style="text-align:center; margin-top:20px;"><button class="btn-section-add" style="margin:0 auto;" onclick="window.app.addNewChecklist()">+ 新增清單</button></div>`;
     };
@@ -1332,7 +1850,7 @@
         }
 
         if(idx===0 || idx===currentTrip.days-1) {
-            const fls = (currentTrip.flights||[]).filter(f=>f.dayIndex===idx);
+            const fls = visibleList(currentTrip, 'flights').filter(f=>f.dayIndex===idx);
             if(fls.length) {
                 fls.forEach(f => {
                     c.innerHTML += `<div class="flight-card-v2"><div class="fc-top"><span class="fc-tag">FLIGHT</span><span class="fc-time">${escapeHtml(f.dep||'')}</span></div><div class="fc-code">${escapeHtml(f.from||'')} → ${escapeHtml(f.to||'')}</div><div class="fc-bottom"><div class="fc-info">${escapeHtml(f.no||'')}</div></div></div>`;
@@ -1342,14 +1860,14 @@
             }
         }
 
-        const ss = (currentTrip.spots||[]).filter(s=>s.dayIndex===idx);
+        const ss = visibleList(currentTrip, 'spots').filter(s=>s.dayIndex===idx);
         ss.forEach(s => {
             let detailsHtml = '';
             if(s.address) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-map-marker-alt" style="width:15px;text-align:center;"></i> ${escapeHtml(s.address)}</div>`;
             if(s.phone) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-phone" style="width:15px;text-align:center;"></i> ${escapeHtml(s.phone)}</div>`;
             if(s.link) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-link" style="width:15px;text-align:center;"></i> <a href="${escapeHtml(s.link)}" target="_blank" onclick="event.stopPropagation()">預約/連結</a></div>`;
             if(s.web) detailsHtml += `<div class="sc-detail-row"><i class="fas fa-globe" style="width:15px;text-align:center;"></i> <a href="${escapeHtml(s.web)}" target="_blank" onclick="event.stopPropagation()">官方網站</a></div>`;
-            c.innerHTML += `<div class="schedule-card" onclick="window.app.openEditSpotModal(${s.id})"><div class="sc-main"><div class="sc-left"><div class="sc-time">${escapeHtml(s.time||'')}</div></div><div class="sc-right"><div class="sc-title">${escapeHtml(s.title||'')}</div></div><div class="sc-tools"><div class="sc-tool-btn" onclick="event.stopPropagation(); window.app.deleteSpot(${s.id})"><i class="fas fa-trash"></i></div></div></div>${detailsHtml ? `<div class="sc-details-block">${detailsHtml}</div>` : ''}</div>`;
+            c.innerHTML += `<div class="schedule-card" onclick="window.app.openEditSpotModal('${escapeHtml(String(s.id))}')"><div class="sc-main"><div class="sc-left"><div class="sc-time">${escapeHtml(s.time||'')}</div></div><div class="sc-right"><div class="sc-title">${escapeHtml(s.title||'')}</div></div><div class="sc-tools"><div class="sc-tool-btn" onclick="event.stopPropagation(); window.app.deleteSpot('${escapeHtml(String(s.id))}')"><i class="fas fa-trash"></i></div></div></div>${detailsHtml ? `<div class="sc-details-block">${detailsHtml}</div>` : ''}</div>`;
         });
         c.innerHTML += `<button class="btn-section-add" style="margin:10px auto;" onclick="window.app.openAddSpotModal()">+ 景點</button>`;
     };
@@ -1359,10 +1877,11 @@
         if(!c) return;
         c.innerHTML="";
         if(!currentTrip) return;
-        if(!currentTrip.shoppingList || currentTrip.shoppingList.length === 0) { c.innerHTML = "<div class='empty-state'>點擊 + 新增購物清單</div>"; return; }
-        currentTrip.shoppingList.forEach(s => {
+        const shopItems = visibleList(currentTrip, 'shoppingList');
+        if(!shopItems.length) { c.innerHTML = "<div class='empty-state'>點擊 + 新增購物清單</div>"; return; }
+        shopItems.forEach(s => {
             const imgStyle = s.image ? `background-image:url('${s.image}')` : `background:#eee`;
-            c.innerHTML += `<div class="shopping-card" onclick="window.app.openAddShoppingModal(${s.id})"><div class="shop-img" style="${imgStyle}"></div><div class="shop-content"><div class="shop-name">${escapeHtml(s.name)}</div><div class="shop-price">HK$${escapeHtml(s.priceHKD||'0')}</div></div><div class="card-tools" style="top:10px;right:10px;"><div class="btn-card-tool" style="width:30px;height:30px;" onclick="event.stopPropagation();window.app.deleteShoppingItem(${s.id})"><i class="fas fa-trash"></i></div></div></div>`;
+            c.innerHTML += `<div class="shopping-card" onclick="window.app.openAddShoppingModal('${escapeHtml(String(s.id))}')"><div class="shop-img" style="${imgStyle}"></div><div class="shop-content"><div class="shop-name">${escapeHtml(s.name)}</div><div class="shop-price">HK$${escapeHtml(s.priceHKD||'0')}</div></div><div class="card-tools" style="top:10px;right:10px;"><div class="btn-card-tool" style="width:30px;height:30px;" onclick="event.stopPropagation();window.app.deleteShoppingItem('${escapeHtml(String(s.id))}')"><i class="fas fa-trash"></i></div></div></div>`;
         });
     };
 
@@ -1371,14 +1890,16 @@
         const wCont = document.getElementById('wallet-list-container'); wCont.innerHTML="";
         if(!currentTrip) return;
         const cur = currentTrip.currency || defaultCurrency;
-        (currentTrip.wallets||[]).forEach(w => {
-            const spent = (currentTrip.expenses||[]).filter(e=>e.walletId===w.id).reduce((a,x)=>a+Number(x.amount||0),0);
-            wCont.innerHTML += `<div class="wallet-card"><div><div class="wallet-name">${escapeHtml(w.name)}</div><div class="wallet-balance">${cur.s}${(w.initialBalance-spent).toLocaleString()}</div></div><div class="wallet-tools"><div class="wallet-tool-btn" onclick="window.app.openEditWalletModal(${w.id})"><i class="fas fa-pen"></i></div><div class="wallet-tool-btn" onclick="window.app.deleteWallet(${w.id})"><i class="fas fa-trash"></i></div></div></div>`;
+        const wallets = visibleList(currentTrip, 'wallets');
+        const allExpenses = visibleList(currentTrip, 'expenses');
+        wallets.forEach(w => {
+            const spent = allExpenses.filter(e=>sameId(e.walletId, w.id)).reduce((a,x)=>a+Number(x.amount||0),0);
+            wCont.innerHTML += `<div class="wallet-card"><div><div class="wallet-name">${escapeHtml(w.name)}</div><div class="wallet-balance">${cur.s}${(w.initialBalance-spent).toLocaleString()}</div></div><div class="wallet-tools"><div class="wallet-tool-btn" onclick="window.app.openEditWalletModal('${escapeHtml(String(w.id))}')"><i class="fas fa-pen"></i></div><div class="wallet-tool-btn" onclick="window.app.deleteWallet('${escapeHtml(String(w.id))}')"><i class="fas fa-trash"></i></div></div></div>`;
         });
         wCont.innerHTML += `<div class="wallet-card wallet-add" onclick="window.app.openAddWalletModal()">+ 新增</div>`;
-        const expenses = currentTrip.expenses||[];
+        const expenses = allExpenses;
         expenses.forEach(e => {
-            c.innerHTML += `<div class="expense-item"><div class="expense-left"><div class="expense-icon-box"><i class="fas fa-${escapeHtml(e.category||'utensils')}"></i></div><div class="expense-info"><div class="expense-name">${escapeHtml(e.name)}</div></div></div><div class="expense-right"><div class="expense-amount">${cur.s}${Number(e.amount||0).toLocaleString()}</div><div class="item-actions"><div class="action-btn" onclick="window.app.openAddExpenseModal(${e.id})"><i class="fas fa-pen"></i></div><div class="action-btn delete" onclick="event.stopPropagation(); window.app.deleteExpense(${e.id})"><i class="fas fa-trash"></i></div></div></div></div>`;
+            c.innerHTML += `<div class="expense-item"><div class="expense-left"><div class="expense-icon-box"><i class="fas fa-${escapeHtml(e.category||'utensils')}"></i></div><div class="expense-info"><div class="expense-name">${escapeHtml(e.name)}</div></div></div><div class="expense-right"><div class="expense-amount">${cur.s}${Number(e.amount||0).toLocaleString()}</div><div class="item-actions"><div class="action-btn" onclick="window.app.openAddExpenseModal('${escapeHtml(String(e.id))}')"><i class="fas fa-pen"></i></div><div class="action-btn delete" onclick="event.stopPropagation(); window.app.deleteExpense('${escapeHtml(String(e.id))}')"><i class="fas fa-trash"></i></div></div></div></div>`;
         });
         const total = expenses.reduce((sum, e) => sum + Number(e.amount||0), 0);
         document.getElementById('budget-total-display').innerText = `${cur.s}${total.toLocaleString()}`;
@@ -1402,11 +1923,11 @@
             bar.innerHTML = members.map(n => `<span class="split-member-chip">${escapeHtml(n)}</span>`).join('') +
                 `<button type="button" class="split-member-chip split-member-add" onclick="window.app.addSplitMember()"><i class="fas fa-plus"></i> 新增成員</button>`;
         }
-        const items = currentTrip.splitItems || [];
+        const items = visibleList(currentTrip, 'splitItems');
         items.forEach(s => {
             const parts = getItemParticipants(s, members, [...new Set(items.map(i => String(i.payer||'').trim()).filter(Boolean))]);
             const partLabel = parts.length ? `<span><i class="fas fa-users"></i> 分給: ${escapeHtml(parts.join('、'))}</span>` : '';
-            c.innerHTML += `<div class="split-item"><div class="split-item-left"><h4>${escapeHtml(s.name)}</h4><span><i class="fas fa-user"></i> 付款人: ${escapeHtml(s.payer)}</span>${partLabel}</div><div class="split-item-right"><div class="split-item-amount">${formatHKD(s.amount||0)}</div><div style="display:flex; justify-content:flex-end; gap:5px; margin-top:5px;"><div class="action-btn" onclick="window.app.openAddSplitModal(${s.id})"><i class="fas fa-pen"></i></div><div class="action-btn" onclick="event.stopPropagation(); window.app.deleteSplitItem(${s.id})"><i class="fas fa-trash"></i></div></div></div></div>`;
+            c.innerHTML += `<div class="split-item"><div class="split-item-left"><h4>${escapeHtml(s.name)}</h4><span><i class="fas fa-user"></i> 付款人: ${escapeHtml(s.payer)}</span>${partLabel}</div><div class="split-item-right"><div class="split-item-amount">${formatHKD(s.amount||0)}</div><div style="display:flex; justify-content:flex-end; gap:5px; margin-top:5px;"><div class="action-btn" onclick="window.app.openAddSplitModal('${escapeHtml(String(s.id))}')"><i class="fas fa-pen"></i></div><div class="action-btn" onclick="event.stopPropagation(); window.app.deleteSplitItem('${escapeHtml(String(s.id))}')"><i class="fas fa-trash"></i></div></div></div></div>`;
         });
         const result = calcSplitSettlement(currentTrip);
         if (result.balances.length < 2) {
@@ -1437,18 +1958,18 @@
     const renderFoodList = () => {
         const c=document.getElementById('food-list-container'); c.innerHTML="";
         if(!currentTrip) return;
-        const foods = (currentTrip.spots||[]).filter(s=>s.icon==='utensils');
+        const foods = visibleList(currentTrip, 'spots').filter(s=>s.icon==='utensils');
         if(!foods.length) { c.innerHTML = "<div class='empty-state'>尚無餐廳</div>"; return; }
         foods.forEach(f => {
-            c.innerHTML += `<div class="schedule-card" onclick="window.app.openEditSpotModal(${f.id})"><div class="sc-main"><div class="sc-left"><div class="sc-time">${escapeHtml(f.time||'')}</div></div><div class="sc-right"><div class="sc-title">${escapeHtml(f.title||'')}</div></div><div class="sc-tools"><div class="sc-tool-btn" onclick="event.stopPropagation(); window.app.deleteSpot(${f.id})"><i class="fas fa-trash"></i></div></div></div>${f.address ? `<div class="sc-details-block"><div class="sc-detail-row"><i class="fas fa-map-marker-alt"></i> ${escapeHtml(f.address)}</div></div>` : ''}</div>`;
+            c.innerHTML += `<div class="schedule-card" onclick="window.app.openEditSpotModal('${escapeHtml(String(f.id))}')"><div class="sc-main"><div class="sc-left"><div class="sc-time">${escapeHtml(f.time||'')}</div></div><div class="sc-right"><div class="sc-title">${escapeHtml(f.title||'')}</div></div><div class="sc-tools"><div class="sc-tool-btn" onclick="event.stopPropagation(); window.app.deleteSpot('${escapeHtml(String(f.id))}')"><i class="fas fa-trash"></i></div></div></div>${f.address ? `<div class="sc-details-block"><div class="sc-detail-row"><i class="fas fa-map-marker-alt"></i> ${escapeHtml(f.address)}</div></div>` : ''}</div>`;
         });
     };
 
     const renderInfoTab = () => {
         const c=document.getElementById('info-cards-container'); c.innerHTML="";
         if(!currentTrip) return;
-        (currentTrip.infoCards||[]).forEach(ic => {
-            c.innerHTML += `<div class="info-card" onclick="window.app.openAddInfoModal(${ic.id})"><div class="info-header">${escapeHtml(ic.title)} <div class="action-btn" onclick="event.stopPropagation(); window.app.deleteInfoCard(${ic.id})"><i class="fas fa-trash"></i></div></div>${ic.image ? `<div class="info-img-box" style="background-image:url('${ic.image}')"></div>` : ''}<div class="info-body">${escapeHtml(ic.detail||'')}</div></div>`;
+        visibleList(currentTrip, 'infoCards').forEach(ic => {
+            c.innerHTML += `<div class="info-card" onclick="window.app.openAddInfoModal('${escapeHtml(String(ic.id))}')"><div class="info-header">${escapeHtml(ic.title)} <div class="action-btn" onclick="event.stopPropagation(); window.app.deleteInfoCard('${escapeHtml(String(ic.id))}')"><i class="fas fa-trash"></i></div></div>${ic.image ? `<div class="info-img-box" style="background-image:url('${ic.image}')"></div>` : ''}<div class="info-body">${escapeHtml(ic.detail||'')}</div></div>`;
         });
         document.getElementById('info-memo').value = currentTrip.memo||"";
     };
@@ -1471,6 +1992,7 @@
         },
 
         goHome: () => {
+            stopPresenceHeartbeat();
             document.getElementById('main-app').classList.remove('active');
             const home = document.getElementById('home-screen');
             home.classList.remove('hidden');
@@ -1511,10 +2033,14 @@
             document.getElementById('bg-preview').style.display='none';
             temp = {cover:'',bg:'',icon:'✈️',color:'#708090'};
             app.initUI();
+            prefillDisplayNameInputs();
             document.getElementById('create-trip-modal').classList.add('active');
         },
         closeCreateModal: () => document.getElementById('create-trip-modal').classList.remove('active'),
-        openJoinModal: () => document.getElementById('join-trip-modal').classList.add('active'),
+        openJoinModal: () => {
+            prefillDisplayNameInputs();
+            document.getElementById('join-trip-modal').classList.add('active');
+        },
         closeJoinModal: () => document.getElementById('join-trip-modal').classList.remove('active'),
         openAddFlightModal: () => document.getElementById('add-flight-modal').classList.add('active'),
         closeFlightModal: () => document.getElementById('add-flight-modal').classList.remove('active'),
@@ -1534,7 +2060,7 @@
         },
         closeWalletModal: () => document.getElementById('add-wallet-modal').classList.remove('active'),
         openEditWalletModal: (id) => {
-            const w = (currentTrip.wallets||[]).find(x => x.id === id);
+            const w = (currentTrip.wallets||[]).find(x => sameId(x.id, id));
             if(!w) return;
             document.getElementById('wallet-id').value = w.id;
             document.getElementById('wallet-name').value = w.name;
@@ -1585,7 +2111,7 @@
                 sel.appendChild(o);
             });
             if(id) {
-                const e = currentTrip.expenses.find(x=>x.id===id);
+                const e = currentTrip.expenses.find(x=>sameId(x.id, id));
                 document.getElementById('expense-id').value=id;
                 document.getElementById('expense-name').value=e.name;
                 document.getElementById('expense-amount').value=e.amount;
@@ -1603,7 +2129,7 @@
         closeExpenseModal: () => document.getElementById('add-expense-modal').classList.remove('active'),
         openAddSplitModal: (id) => {
             if(id) {
-                const s = currentTrip.splitItems.find(x=>x.id===id);
+                const s = currentTrip.splitItems.find(x=>sameId(x.id, id));
                 document.getElementById('split-id').value=id;
                 document.getElementById('split-name').value=s.name;
                 document.getElementById('split-payer').value=s.payer;
@@ -1643,7 +2169,7 @@
         openAddShoppingModal: (id) => {
             app.resetImg('shop');
             if(id) {
-                const s = currentTrip.shoppingList.find(x=>x.id===id);
+                const s = currentTrip.shoppingList.find(x=>sameId(x.id, id));
                 document.getElementById('shop-id').value=id;
                 document.getElementById('shop-name').value=s.name;
                 document.getElementById('shop-desc').value=s.desc || '';
@@ -1665,7 +2191,7 @@
         openAddInfoModal: (id) => {
             app.resetImg('info');
             if(id) {
-                const c = currentTrip.infoCards.find(x=>x.id===id);
+                const c = currentTrip.infoCards.find(x=>sameId(x.id, id));
                 document.getElementById('info-id').value=id;
                 document.getElementById('info-title').value=c.title;
                 document.getElementById('info-detail').value=c.detail;
@@ -1694,6 +2220,7 @@
         },
 
         saveTrip: async (t) => {
+            ensureTripIds(t);
             const did = tripDocId(t);
             if (did) t.docId = did;
             t.updatedAt = Date.now();
@@ -1733,6 +2260,7 @@
                             cover:temp.cover||t.cover, bg:temp.bg||t.bg,
                             themeColor:temp.color||t.themeColor, icon:temp.icon||t.icon
                         });
+                        upsertSelfCollaborator(t, saveDisplayName((document.getElementById('input-creator-name') || {}).value));
                         await app.saveTrip(t);
                         await flushPublishTrip(tripDocId(t), t);
                         app.closeCreateModal();
@@ -1740,6 +2268,7 @@
                     }
                 } else {
                     let cid=normalizeId(document.getElementById('input-custom-id').value).replace(/\s+/g,'');
+                    let isOverwrite = false;
                     if (!cid) {
                         for (let n=0;n<8;n++) {
                             cid = generateTripId();
@@ -1762,6 +2291,7 @@
                             const reuse = await app.confirmAsync('此編號已有行程「' + oldTitle + '」。要覆蓋舊行程並重新使用呢個編號嗎？');
                             if (!reuse) return;
                             removeLocalTrip(cid);
+                            isOverwrite = true;
                         }
                     }
 
@@ -1771,12 +2301,15 @@
                         cover:temp.cover||'', bg:temp.bg||'',
                         themeColor:temp.color||'#708090', icon:temp.icon||'✈️', currency:cur,
                         flights:[], spots:[], shoppingList:[], expenses:[], wallets:[], splitItems:[], splitMembers: [], infoCards:[], checklists: [],
+                        collaborators: [], removed: {},
                         docId: cid, customId: cid, updatedAt: Date.now()
                     };
+                    upsertSelfCollaborator(newT, saveDisplayName((document.getElementById('input-creator-name') || {}).value));
                     rememberId(cid);
                     await app.saveTrip(newT);
                     app.watchTrip(cid);
-                    await flushPublishTrip(cid, newT);
+                    await publishPresence(cid, 'join');
+                    await flushPublishTrip(cid, newT, { allowCreate: true, isOverwrite });
                     app.closeCreateModal();
                     await app.copyTripId(cid);
                     showToast('已建立，旅行編號：' + cid);
@@ -1795,6 +2328,7 @@
         joinTrip: async () => {
             const id = normalizeId(document.getElementById('input-join-id').value);
             if (!id) return alert('請輸入旅行編號');
+            const joinName = saveDisplayName((document.getElementById('input-join-name') || {}).value);
             const btn = document.querySelector('#join-trip-modal .btn-primary');
             const old = btn.innerText;
             btn.innerText = '載入中...';
@@ -1811,12 +2345,15 @@
                 }
                 if (result.trip) {
                     const local = app.getTripById(id);
-                    t = mergeLocalImages(Object.assign({}, result.trip, {
+                    let incoming = Object.assign({}, result.trip, {
                         docId: id,
                         customId: id,
                         updatedAt: result.ts || result.trip.updatedAt
-                    }), local);
-                    app.upsertLocalTrip(t);
+                    });
+                    t = local ? mergeTrips(local, incoming) : ensureTripIds(incoming);
+                    t = mergeLocalImages(t, local);
+                    t.docId = id;
+                    t.customId = id;
                 } else {
                     t = app.getTripById(id);
                 }
@@ -1825,6 +2362,12 @@
                     alert('找不到此編號。請確認編號無誤，或檢查網絡後再試。');
                     return;
                 }
+                upsertSelfCollaborator(t, joinName);
+                app.upsertLocalTrip(t);
+                await publishPresence(id, 'join');
+                await flushPublishTrip(id, t);
+                const published = app.getTripById(id);
+                if (published) t = published;
                 app.closeJoinModal();
                 document.getElementById('input-join-id').value = '';
                 showToast('已載入行程：' + (t.title||id));
@@ -1902,7 +2445,7 @@
                      if(geoTitle) coords = geoTitle;
                 }
                 const spot = {
-                    id: idVal?parseInt(idVal):Date.now(),
+                    id: idVal?idVal:Date.now(),
                     dayIndex: Math.max(dayIdx, 0),
                     time:document.getElementById('spot-time').value,
                     title,
@@ -1911,11 +2454,12 @@
                     phone:document.getElementById('spot-phone').value,
                     link:document.getElementById('spot-link').value,
                     web:document.getElementById('spot-web').value,
+                    updatedAt: Date.now(),
                     ...coords
                 };
                 if(!currentTrip.spots) currentTrip.spots=[];
                 if(idVal) {
-                    const i=currentTrip.spots.findIndex(x=>x.id==idVal);
+                    const i=currentTrip.spots.findIndex(x=>sameId(x.id, idVal));
                     if(i>-1) currentTrip.spots[i]=spot;
                 } else currentTrip.spots.push(spot);
                 currentTrip.spots.sort((a,b)=>String(a.time||'').localeCompare(String(b.time||'')));
@@ -1935,12 +2479,12 @@
         },
         deleteSpot: (id) => {
             app.openConfirmModal("確定刪除此景點?", () => {
-                currentTrip.spots = currentTrip.spots.filter(x => x.id !== id);
+                markItemRemoved(currentTrip, 'spots', id);
                 app.saveTrip(currentTrip);
             });
         },
         openEditSpotModal: (id) => {
-            const s = currentTrip.spots.find(x=>x.id===id);
+            const s = currentTrip.spots.find(x=>sameId(x.id, id));
             if(!s) return;
             document.getElementById('spot-id').value=s.id;
             document.getElementById('spot-title').value=s.title;
@@ -1955,7 +2499,7 @@
         },
         deleteWallet: (id) => {
             app.openConfirmModal("確定刪除此錢包？", () => {
-                currentTrip.wallets = currentTrip.wallets.filter(x => x.id !== id);
+                markItemRemoved(currentTrip, 'wallets', id);
                 app.saveTrip(currentTrip);
             });
         },
@@ -1964,9 +2508,9 @@
             if(!name) return;
             if(!currentTrip.wallets) currentTrip.wallets=[];
             const idVal = document.getElementById('wallet-id').value;
-            const wallet = { id: idVal ? parseInt(idVal) : Date.now(), name, initialBalance:parseFloat(document.getElementById('wallet-balance').value)||0 };
+            const wallet = { id: idVal ? idVal : Date.now(), name, initialBalance:parseFloat(document.getElementById('wallet-balance').value)||0, updatedAt: Date.now() };
             if(idVal) {
-                const i = currentTrip.wallets.findIndex(x=>x.id==idVal);
+                const i = currentTrip.wallets.findIndex(x=>sameId(x.id, idVal));
                 if(i>-1) currentTrip.wallets[i] = wallet;
             } else currentTrip.wallets.push(wallet);
             app.saveTrip(currentTrip);
@@ -1974,7 +2518,7 @@
         },
         deleteExpense: (id) => {
             app.openConfirmModal("確定刪除此支出?", () => {
-                currentTrip.expenses = currentTrip.expenses.filter(x => x.id !== id);
+                markItemRemoved(currentTrip, 'expenses', id);
                 app.saveTrip(currentTrip);
             });
         },
@@ -1982,10 +2526,11 @@
             const id=document.getElementById('expense-id').value;
             const amt=parseFloat(document.getElementById('expense-amount').value);
             if(isNaN(amt)) return alert("請輸入金額");
-            const exp = { id: id?parseInt(id):Date.now(), name:document.getElementById('expense-name').value||'一般', amount:amt, category:document.getElementById('expense-category').value, walletId:parseInt(document.getElementById('expense-wallet').value), date:new Date().toISOString() };
+            const wid = document.getElementById('expense-wallet').value;
+            const exp = { id: id?id:Date.now(), name:document.getElementById('expense-name').value||'一般', amount:amt, category:document.getElementById('expense-category').value, walletId: /^-?\d+$/.test(wid) ? parseInt(wid, 10) : wid, date:new Date().toISOString(), updatedAt: Date.now() };
             if(!currentTrip.expenses) currentTrip.expenses=[];
             if(id) {
-                const i=currentTrip.expenses.findIndex(x=>x.id==id);
+                const i=currentTrip.expenses.findIndex(x=>sameId(x.id, id));
                 if(i>-1) currentTrip.expenses[i]=exp;
             } else currentTrip.expenses.push(exp);
             app.saveTrip(currentTrip);
@@ -1993,7 +2538,7 @@
         },
         deleteSplitItem: (id) => {
             app.openConfirmModal("確定刪除此分帳項目?", () => {
-                currentTrip.splitItems = currentTrip.splitItems.filter(x => x.id !== id);
+                markItemRemoved(currentTrip, 'splitItems', id);
                 app.saveTrip(currentTrip);
             });
         },
@@ -2008,10 +2553,10 @@
                 participants = getSplitMembers(currentTrip);
                 if (!participants.length) participants = [payer];
             }
-            const item = { id: id?parseInt(id):Date.now(), name:document.getElementById('split-name').value, payer, amount:amt, participants };
+            const item = { id: id?id:Date.now(), name:document.getElementById('split-name').value, payer, amount:amt, participants, updatedAt: Date.now() };
             if(!currentTrip.splitItems) currentTrip.splitItems=[];
             if(id) {
-                const i=currentTrip.splitItems.findIndex(x=>x.id==id);
+                const i=currentTrip.splitItems.findIndex(x=>sameId(x.id, id));
                 if(i>-1) currentTrip.splitItems[i]=item;
             } else currentTrip.splitItems.push(item);
             const members = getSplitMembers(currentTrip);
@@ -2023,7 +2568,7 @@
         },
         deleteShoppingItem: (id) => {
             app.openConfirmModal("確定刪除此購物項目?", () => {
-                currentTrip.shoppingList = currentTrip.shoppingList.filter(x => x.id !== id);
+                markItemRemoved(currentTrip, 'shoppingList', id);
                 app.saveTrip(currentTrip);
             });
         },
@@ -2031,10 +2576,10 @@
             const id=document.getElementById('shop-id').value;
             const name=document.getElementById('shop-name').value;
             if(!name) return;
-            const item = { id: id?parseInt(id):Date.now(), name, desc:document.getElementById('shop-desc').value, priceHKD:document.getElementById('shop-price-hkd').value, priceLocal:document.getElementById('shop-price-local').value, image:temp.shop||'' };
+            const item = { id: id?id:Date.now(), name, desc:document.getElementById('shop-desc').value, priceHKD:document.getElementById('shop-price-hkd').value, priceLocal:document.getElementById('shop-price-local').value, image:temp.shop||'', updatedAt: Date.now() };
             if(!currentTrip.shoppingList) currentTrip.shoppingList=[];
             if(id) {
-                const i=currentTrip.shoppingList.findIndex(x=>x.id==id);
+                const i=currentTrip.shoppingList.findIndex(x=>sameId(x.id, id));
                 if(i>-1) currentTrip.shoppingList[i]=item;
             } else currentTrip.shoppingList.push(item);
             app.saveTrip(currentTrip);
@@ -2042,7 +2587,7 @@
         },
         deleteInfoCard: (id) => {
             app.openConfirmModal("確定刪除此資訊卡片?", () => {
-                currentTrip.infoCards = currentTrip.infoCards.filter(x => x.id !== id);
+                markItemRemoved(currentTrip, 'infoCards', id);
                 app.saveTrip(currentTrip);
             });
         },
@@ -2050,24 +2595,24 @@
             const id=document.getElementById('info-id').value;
             const title=document.getElementById('info-title').value;
             if(!title) return;
-            const card = { id: id?parseInt(id):Date.now(), type:document.getElementById('info-type').value, title, detail:document.getElementById('info-detail').value, image:temp.info||'' };
+            const card = { id: id?id:Date.now(), type:document.getElementById('info-type').value, title, detail:document.getElementById('info-detail').value, image:temp.info||'', updatedAt: Date.now() };
             if(!currentTrip.infoCards) currentTrip.infoCards=[];
             if(id) {
-                const i=currentTrip.infoCards.findIndex(x=>x.id==id);
+                const i=currentTrip.infoCards.findIndex(x=>sameId(x.id, id));
                 if(i>-1) currentTrip.infoCards[i]=card;
             } else currentTrip.infoCards.push(card);
             app.saveTrip(currentTrip);
             app.closeInfoModal();
         },
         saveMemo: () => { currentTrip.memo = document.getElementById('info-memo').value; app.saveTrip(currentTrip); },
-        addChecklistItem: (i) => { const t=prompt("輸入檢查項目"); if(t){ if(!currentTrip.checklists[i].items) currentTrip.checklists[i].items = []; currentTrip.checklists[i].items.push(t); app.saveTrip(currentTrip); app.refreshView(); } },
-        editChecklistItem: (i, j) => { const oldVal = currentTrip.checklists[i].items[j]; const newVal = prompt("編輯項目", oldVal); if (newVal !== null && newVal.trim() !== "") { currentTrip.checklists[i].items[j] = newVal; app.saveTrip(currentTrip); app.refreshView(); } },
-        deleteChecklistItem: (e,i,j) => { e.stopPropagation(); app.openConfirmModal("確定刪除此檢查項目?", () => { currentTrip.checklists[i].items.splice(j,1); app.saveTrip(currentTrip); app.refreshView(); }); },
-        addNewChecklist: () => { const t=prompt("輸入清單名稱"); if(t){ if(!currentTrip.checklists) currentTrip.checklists=[]; currentTrip.checklists.push({title:t,items:[]}); app.saveTrip(currentTrip); app.refreshView(); } },
+        addChecklistItem: (i) => { const t=prompt("輸入檢查項目"); if(t){ ensureTripIds(currentTrip); if(!currentTrip.checklists[i].items) currentTrip.checklists[i].items = []; currentTrip.checklists[i].items.push({ id: Date.now(), text: t, updatedAt: Date.now() }); currentTrip.checklists[i].updatedAt = Date.now(); app.saveTrip(currentTrip); app.refreshView(); } },
+        editChecklistItem: (i, j) => { ensureTripIds(currentTrip); const oldVal = checklistItemText(currentTrip.checklists[i].items[j]); const newVal = prompt("編輯項目", oldVal); if (newVal !== null && newVal.trim() !== "") { const it = currentTrip.checklists[i].items[j]; if (typeof it === 'string' || !it || typeof it !== 'object') currentTrip.checklists[i].items[j] = { id: Date.now(), text: newVal, updatedAt: Date.now() }; else { it.text = newVal; it.updatedAt = Date.now(); } currentTrip.checklists[i].updatedAt = Date.now(); app.saveTrip(currentTrip); app.refreshView(); } },
+        deleteChecklistItem: (e,i,j) => { e.stopPropagation(); app.openConfirmModal("確定刪除此檢查項目?", () => { ensureTripIds(currentTrip); const it = currentTrip.checklists[i].items[j]; const itemId = (it && typeof it === 'object' && it.id != null) ? it.id : stableItemId('checklistItems', { title: checklistItemText(it) }); currentTrip.checklists[i].items.splice(j,1); if (!currentTrip.removed) currentTrip.removed = {}; if (!currentTrip.removed.checklistItems) currentTrip.removed.checklistItems = {}; currentTrip.removed.checklistItems[String(itemId)] = Date.now(); currentTrip.checklists[i].updatedAt = Date.now(); app.saveTrip(currentTrip); app.refreshView(); }); },
+        addNewChecklist: () => { const t=prompt("輸入清單名稱"); if(t){ if(!currentTrip.checklists) currentTrip.checklists=[]; currentTrip.checklists.push({id:Date.now(), title:t, items:[], updatedAt: Date.now()}); app.saveTrip(currentTrip); app.refreshView(); } },
         saveFlight: () => {
             const from=document.getElementById('flight-from').value; if(!from) return;
             if(!currentTrip.flights) currentTrip.flights=[];
-            currentTrip.flights.push({ id:Date.now(), dayIndex: Math.max(dayIdx,0), from, to:document.getElementById('flight-to').value, no:document.getElementById('flight-no').value, dep:document.getElementById('flight-dep-time').value, arr:document.getElementById('flight-arr-time').value });
+            currentTrip.flights.push({ id:Date.now(), dayIndex: Math.max(dayIdx,0), from, to:document.getElementById('flight-to').value, no:document.getElementById('flight-no').value, dep:document.getElementById('flight-dep-time').value, arr:document.getElementById('flight-arr-time').value, updatedAt: Date.now() });
             app.saveTrip(currentTrip); app.closeFlightModal();
         },
         deleteTrip: (e, id) => {
@@ -2097,6 +2642,7 @@
             document.getElementById('input-start').value=t.start;
             document.getElementById('input-end').value=t.end;
             document.getElementById('input-desc').value=t.desc || '';
+            prefillDisplayNameInputs();
             temp.icon = t.icon; temp.color = t.themeColor; temp.cover = t.cover; temp.bg = t.bg;
             if (t.cover) { document.getElementById('cover-preview').style.backgroundImage=`url('${t.cover}')`; document.getElementById('cover-preview').style.display='block'; }
             if (t.bg) { document.getElementById('bg-preview').style.backgroundImage=`url('${t.bg}')`; document.getElementById('bg-preview').style.display='block'; }
@@ -2143,13 +2689,16 @@
             document.getElementById('app-title-display').innerHTML = '<span style="margin-right:8px;">' + (trip.icon||'') + '</span>' + escapeHtml(trip.title||'');
             const code = tripDocId(trip);
             document.getElementById('app-code-display').innerHTML = code ? `編號 ${escapeHtml(code)} <i class="fas fa-copy" style="cursor:pointer" onclick="window.app.copyTripId('${escapeHtml(code)}')"></i>` : '';
+            updatePeersDisplay();
             const bg = document.getElementById('main-app-bg');
             if(trip.bg) { bg.style.backgroundImage=`url('${trip.bg}')`; document.getElementById('main-app').style.backgroundColor='transparent'; }
             else { bg.style.backgroundImage='none'; document.getElementById('main-app').style.backgroundColor=(trip.themeColor||'#708090')+'10'; }
+            startPresenceHeartbeat();
             app.refreshView();
             setTimeout(() => { app.initMap(); if(window.journeyMap) window.journeyMap.invalidateSize(); }, 200);
         },
         refreshView: () => {
+            updatePeersDisplay();
             const activeNav = document.querySelector('.nav-item.active');
             if(!activeNav) return;
             const tab = activeNav.getAttribute('onclick').match(/'([^']+)'/)[1];
@@ -2196,9 +2745,9 @@
             }
             if (window.journeyMap) {
                 if (markersLayer) { markersLayer.clearLayers(); } else { markersLayer = L.layerGroup().addTo(window.journeyMap); }
-                if(currentTrip && currentTrip.spots) {
+                if(currentTrip) {
                     const bounds = [];
-                    currentTrip.spots.forEach(spot => {
+                    visibleList(currentTrip, 'spots').forEach(spot => {
                         if(spot.lat && spot.lng) {
                             const dayNum = (spot.dayIndex||0) + 1;
                             const customIcon = L.divIcon({ className: 'custom-div-icon', html: `<div class="custom-map-marker">${dayNum}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
@@ -2248,7 +2797,9 @@
 
     (async function() {
         try { myTrips = JSON.parse(localStorage.getItem('trips'))||[]; } catch(err){ myTrips=[]; }
+        rememberExistingCollaborators();
         app.initUI();
+        prefillDisplayNameInputs();
         app.renderTripList();
 
         const ok = await initSync();
