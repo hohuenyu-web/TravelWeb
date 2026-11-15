@@ -9,6 +9,41 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    window.__pubnubLoadPromise = (function () {
+      var urls = [
+        'https://cdn.jsdelivr.net/npm/pubnub@7.6.3/dist/web/pubnub.min.js',
+        'https://cdn.pubnub.com/sdk/javascript/pubnub.7.6.3.min.js'
+      ];
+      function loadOne(url) {
+        return new Promise(function (resolve) {
+          if (typeof PubNub !== 'undefined') { resolve(true); return; }
+          var s = document.createElement('script');
+          s.src = url; s.async = true;
+          var done = false;
+          var timer = setTimeout(function () {
+            if (done) return; done = true; try { s.remove(); } catch (e) {}
+            resolve(false);
+          }, 8000);
+          s.onload = function () {
+            if (done) return; done = true; clearTimeout(timer);
+            resolve(typeof PubNub !== 'undefined');
+          };
+          s.onerror = function () {
+            if (done) return; done = true; clearTimeout(timer); resolve(false);
+          };
+          document.head.appendChild(s);
+        });
+      }
+      return (async function () {
+        if (typeof PubNub !== 'undefined') return true;
+        for (var i = 0; i < urls.length; i++) {
+          if (await loadOne(urls[i])) return true;
+        }
+        return false;
+      })();
+    })();
+    </script>
     <style>
         :root {
             --bg-color: #FAF9F6;
@@ -500,11 +535,7 @@
         </nav>
     </div>
 
-<script type="module">
-
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, getDoc, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+<script>
 
     const emojiList = [
         '🇯🇵','🇹🇼','🇰🇷','🇹🇭','🇺🇸','🇬🇧','🇪🇺','🇫🇷','🇮🇹','🇪🇸','🇩🇪','🇨🇳','🇭🇰','🇻🇳','🇸🇬','🇲🇾','🇦🇺','🇨🇦',
@@ -525,22 +556,28 @@
     const currencyMap = { '台灣':{s:'NT$'}, '日本':{s:'¥'}, 'Korea':{s:'₩'}, 'Thailand':{s:'฿'}, 'USA':{s:'$'}, 'UK':{s:'£'}, 'Europe':{s:'€'} };
     const defaultCurrency = {s:'¥'};
 
-    const firebaseConfig = {
-      apiKey: "AIzaSyAaYnwtPuTV2f1bLL9VjwnfTWUFpsCSHeI",
-      authDomain: "journeycrafter-9b247.firebaseapp.com",
-      projectId: "journeycrafter-9b247",
-      storageBucket: "journeycrafter-9b247.firebasestorage.app",
-      messagingSenderId: "215948890940",
-      appId: "1:215948890940:web:d98b9e100b69936ac90439"
-    };
+    const PUBNUB_PUBLISH_KEY = 'demo';
+    const PUBNUB_SUBSCRIBE_KEY = 'demo';
+    const CLOUD_CHANNEL_PREFIX = 'travelweb-v1-';
+    const PUBNUB_REST_ORIGIN = 'https://ps.pndsn.com';
+    const REST_POLL_MS = 2000;
+    const HISTORY_FETCH_COUNT = 50;
+    const PUBLISH_RETRIES = 3;
+    const PUBLISH_DEBOUNCE_MS = 400;
+    const DEVICE_UUID_KEY = 'travelweb_uuid';
+    const PUBNUB_MAX_BYTES = 30000;
 
-    let db, auth, isReady=false;
+    let isReady=false;
+    let pubnub=null;
+    let syncBackend=null;
+    let restPollTimer=null;
     let myTrips=[], allCache=[], subIds=JSON.parse(localStorage.getItem('sub_ids'))||[];
     let currentTrip=null, dayIdx=0, editId=null, temp={cover:'',bg:'',icon:'',color:''};
     let currentRate=0;
     let expenseChart = null;
     let markersLayer = null;
-    const tripUnsubs = new Map();
+    const watchedIds = new Set();
+    const publishTimers = new Map();
 
     function showToast(msg) {
         const toast = document.createElement('div');
@@ -567,8 +604,7 @@
         const did = normalizeId(id);
         subIds = subIds.filter(x => String(x) !== did);
         localStorage.setItem('sub_ids', JSON.stringify(subIds));
-        const unsub = tripUnsubs.get(did);
-        if (unsub) { unsub(); tripUnsubs.delete(did); }
+        unwatchTrip(did);
     }
 
     function generateTripId() {
@@ -580,6 +616,351 @@
 
     function tripDocId(t) {
         return normalizeId(t && (t.docId || t.customId));
+    }
+
+    function getDeviceUuid() {
+        try {
+            let id = localStorage.getItem(DEVICE_UUID_KEY);
+            if (!id) {
+                id = 'tw-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+                localStorage.setItem(DEVICE_UUID_KEY, id);
+            }
+            return id;
+        } catch (e) {
+            return 'tw-' + Math.random().toString(36).slice(2);
+        }
+    }
+
+    const DEVICE_UUID = getDeviceUuid();
+
+    function cloudChannel(id) {
+        return CLOUD_CHANNEL_PREFIX + normalizeId(id);
+    }
+
+    function setSyncStatus(ready, backend) {
+        const was = isReady;
+        isReady = !!ready;
+        if (backend) syncBackend = backend;
+        const el = document.getElementById('sync-status');
+        if (el) el.className = isReady ? 'online' : 'offline';
+        if (!isReady && was) showToast('離線模式：資料先存在此裝置');
+    }
+
+    function byteSize(obj) {
+        try { return new TextEncoder().encode(JSON.stringify(obj)).length; }
+        catch (e) { return JSON.stringify(obj).length; }
+    }
+
+    function isDataUrl(v) {
+        return typeof v === 'string' && /^data:/i.test(v);
+    }
+
+    function stripAllDataUrls(value) {
+        if (Array.isArray(value)) {
+            value.forEach(stripAllDataUrls);
+            return value;
+        }
+        if (value && typeof value === 'object') {
+            Object.keys(value).forEach((k) => {
+                const v = value[k];
+                if (isDataUrl(v)) value[k] = '';
+                else if (v && typeof v === 'object') stripAllDataUrls(v);
+            });
+        }
+        return value;
+    }
+
+    function stripTripForCloud(trip, aggressive) {
+        let t;
+        try { t = JSON.parse(JSON.stringify(trip)); }
+        catch (e) { t = Object.assign({}, trip); }
+        const clear = (obj, key) => {
+            if (!obj) return;
+            if (typeof obj[key] === 'string' && (aggressive || isDataUrl(obj[key]) || obj[key].length > 512)) {
+                obj[key] = '';
+            }
+        };
+        clear(t, 'cover');
+        clear(t, 'bg');
+        (t.shoppingList || []).forEach((s) => clear(s, 'image'));
+        (t.infoCards || []).forEach((c) => clear(c, 'image'));
+        if (aggressive) stripAllDataUrls(t);
+        return t;
+    }
+
+    function isBlankImage(v) {
+        return v == null || v === '' || v === '[omitted]';
+    }
+
+    function mergeLocalImages(remote, local) {
+        if (!remote) return remote;
+        if (!local) return remote;
+        const out = remote;
+        if (isBlankImage(out.cover) && local.cover) out.cover = local.cover;
+        if (isBlankImage(out.bg) && local.bg) out.bg = local.bg;
+        const mergeList = (remoteList, localList) => {
+            if (!Array.isArray(remoteList) || !Array.isArray(localList)) return remoteList;
+            return remoteList.map((item) => {
+                if (!item || !isBlankImage(item.image)) return item;
+                const prev = localList.find((x) => x && x.id === item.id);
+                if (prev && prev.image) return Object.assign({}, item, { image: prev.image });
+                return item;
+            });
+        };
+        if (out.shoppingList) out.shoppingList = mergeList(out.shoppingList, local.shoppingList || []);
+        if (out.infoCards) out.infoCards = mergeList(out.infoCards, local.infoCards || []);
+        return out;
+    }
+
+    function localTripTs(t) {
+        if (!t) return 0;
+        return Number(t.updatedAt || t.ts || 0) || 0;
+    }
+
+    function extractTripMessage(payload) {
+        if (!payload || typeof payload !== 'object') return null;
+        const msg = (payload.message && payload.type == null) ? payload.message : payload;
+        if (!msg || typeof msg !== 'object') return null;
+        if (msg.type && msg.type !== 'trip') return null;
+        const trip = msg.trip || ((msg.title && (msg.docId || msg.customId)) ? msg : null);
+        if (!trip || typeof trip !== 'object') return null;
+        const tripId = normalizeId(msg.tripId || trip.docId || trip.customId);
+        if (!tripId) return null;
+        return {
+            type: 'trip',
+            ts: Number(msg.ts || trip.updatedAt || trip.ts || 0) || 0,
+            tripId,
+            sender: msg.sender || '',
+            trip
+        };
+    }
+
+    function applyRemoteTrip(msg) {
+        if (!msg || !msg.trip) return;
+        const did = normalizeId(msg.tripId);
+        if (!did) return;
+        const local = app.getTripById(did);
+        if (msg.sender && msg.sender === DEVICE_UUID && local && localTripTs(local)) return;
+        const incomingTs = Number(msg.ts || 0) || localTripTs(msg.trip);
+        const currentTs = localTripTs(local);
+        if (local && incomingTs <= currentTs) return;
+        let t = Object.assign({}, msg.trip, {
+            docId: did,
+            customId: did,
+            updatedAt: incomingTs || msg.trip.updatedAt
+        });
+        t = mergeLocalImages(t, local);
+        app.upsertLocalTrip(t);
+        if (currentTrip && tripDocId(currentTrip) === did) {
+            currentTrip = t;
+            app.refreshView();
+        }
+        app.renderTripList();
+    }
+
+    async function ensurePubNub() {
+        if (window.__pubnubLoadPromise) await window.__pubnubLoadPromise;
+        if (typeof PubNub === 'undefined') return null;
+        if (pubnub) return pubnub;
+        pubnub = new PubNub({
+            publishKey: PUBNUB_PUBLISH_KEY,
+            subscribeKey: PUBNUB_SUBSCRIBE_KEY,
+            uuid: DEVICE_UUID,
+            restore: false
+        });
+        pubnub.addListener({
+            message: function (m) {
+                try {
+                    const msg = extractTripMessage(m && m.message);
+                    if (msg) applyRemoteTrip(msg);
+                } catch (e) { console.warn(e); }
+            },
+            status: function (st) {
+                if (!st) return;
+                if (st.category === 'PNConnectedCategory' || st.category === 'PNNetworkUpCategory') {
+                    setSyncStatus(true, 'pubnub');
+                }
+            }
+        });
+        return pubnub;
+    }
+
+    function publishCloudRest(tripId, envelope) {
+        const channel = cloudChannel(tripId);
+        const url = PUBNUB_REST_ORIGIN + '/publish/' + PUBNUB_PUBLISH_KEY + '/' + PUBNUB_SUBSCRIBE_KEY +
+            '/0/' + encodeURIComponent(channel) + '/0/' + encodeURIComponent(JSON.stringify(envelope));
+        if (url.length > 18000) return Promise.resolve(false);
+        return fetch(url, { method: 'GET' }).then((r) => r.ok).catch(() => false);
+    }
+
+    function publishCloud(tripId, envelope) {
+        if (!tripId) return Promise.resolve(false);
+        if (pubnub) {
+            return pubnub.publish({ channel: cloudChannel(tripId), message: envelope })
+                .then(() => true)
+                .catch(() => publishCloudRest(tripId, envelope));
+        }
+        return publishCloudRest(tripId, envelope);
+    }
+
+    function publishCloudReliable(tripId, envelope, tries) {
+        let left = (typeof tries === 'number') ? tries : PUBLISH_RETRIES;
+        const attempt = function () {
+            return publishCloud(tripId, envelope).then((ok) => {
+                if (ok) return true;
+                left -= 1;
+                if (left <= 0) return false;
+                return new Promise((resolve) => {
+                    setTimeout(() => resolve(attempt()), 350 + Math.floor(Math.random() * 400));
+                });
+            });
+        };
+        return attempt();
+    }
+
+    async function publishTripSnapshot(did, trip) {
+        const t = trip || app.getTripById(did);
+        if (!t || !did) return false;
+        const ts = localTripTs(t) || Date.now();
+        const makeEnvelope = (aggressive) => ({
+            type: 'trip',
+            ts,
+            tripId: did,
+            sender: DEVICE_UUID,
+            trip: stripTripForCloud(t, aggressive)
+        });
+        let envelope = makeEnvelope(false);
+        if (byteSize(envelope) > PUBNUB_MAX_BYTES) envelope = makeEnvelope(true);
+        let ok = false;
+        try {
+            ok = await publishCloudReliable(did, envelope);
+            if (!ok) {
+                envelope = makeEnvelope(true);
+                ok = await publishCloudReliable(did, envelope);
+            }
+        } catch (e) {
+            console.warn(e);
+            ok = false;
+        }
+        if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
+        return ok;
+    }
+
+    function schedulePublishTrip(t) {
+        const did = tripDocId(t);
+        if (!did) return;
+        if (publishTimers.has(did)) clearTimeout(publishTimers.get(did));
+        publishTimers.set(did, setTimeout(() => {
+            publishTimers.delete(did);
+            publishTripSnapshot(did, app.getTripById(did) || t);
+        }, PUBLISH_DEBOUNCE_MS));
+    }
+
+    function flushPublishTrip(did, t) {
+        if (publishTimers.has(did)) {
+            clearTimeout(publishTimers.get(did));
+            publishTimers.delete(did);
+        }
+        return publishTripSnapshot(did, t);
+    }
+
+    async function loadHistory(tripId) {
+        const channel = cloudChannel(tripId);
+        const url = PUBNUB_REST_ORIGIN + '/v2/history/sub-key/' + PUBNUB_SUBSCRIBE_KEY +
+            '/channel/' + encodeURIComponent(channel) + '?count=' + HISTORY_FETCH_COUNT;
+        const r = await fetch(url);
+        if (!r.ok) return { ok: false, messages: [] };
+        const data = await r.json();
+        const messages = [];
+        if (Array.isArray(data) && Array.isArray(data[0])) {
+            data[0].forEach((payload) => {
+                const msg = extractTripMessage(payload);
+                if (msg) messages.push(msg);
+            });
+        }
+        return { ok: true, messages };
+    }
+
+    async function fetchLatestTripSnapshot(tripId) {
+        try {
+            const res = await loadHistory(tripId);
+            if (!res.ok) return { ok: false, trip: null, ts: 0, sender: '' };
+            let latest = null;
+            res.messages.forEach((msg) => {
+                if (!latest || (msg.ts || 0) >= (latest.ts || 0)) latest = msg;
+            });
+            return {
+                ok: true,
+                trip: latest && latest.trip,
+                ts: (latest && latest.ts) || 0,
+                sender: (latest && latest.sender) || ''
+            };
+        } catch (e) {
+            return { ok: false, trip: null, ts: 0, sender: '' };
+        }
+    }
+
+    async function pollTripHistory(tripId) {
+        try {
+            const res = await loadHistory(tripId);
+            if (!res.ok) return false;
+            res.messages.forEach((msg) => applyRemoteTrip(msg));
+            if (!isReady) setSyncStatus(true, syncBackend || 'rest');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function startHistoryPoll() {
+        if (restPollTimer) return;
+        restPollTimer = setInterval(() => {
+            const ids = Array.from(watchedIds);
+            ids.reduce((p, id) => p.then(() => pollTripHistory(id)), Promise.resolve());
+        }, REST_POLL_MS);
+    }
+
+    function unwatchTrip(did) {
+        const id = normalizeId(did);
+        if (!id) return;
+        watchedIds.delete(id);
+        if (pubnub) {
+            try { pubnub.unsubscribe({ channels: [cloudChannel(id)] }); } catch (e) {}
+        }
+        if (publishTimers.has(id)) {
+            clearTimeout(publishTimers.get(id));
+            publishTimers.delete(id);
+        }
+    }
+
+    async function initSync() {
+        try {
+            const pn = await ensurePubNub();
+            if (pn) syncBackend = 'pubnub';
+            const probe = await fetch(PUBNUB_REST_ORIGIN + '/v2/history/sub-key/' + PUBNUB_SUBSCRIBE_KEY +
+                '/channel/' + encodeURIComponent(cloudChannel('_ping')) + '?count=1');
+            if (probe && probe.ok) {
+                if (!syncBackend) syncBackend = 'rest';
+                setSyncStatus(true, syncBackend);
+                startHistoryPoll();
+                return true;
+            }
+            if (pn) {
+                setSyncStatus(true, 'pubnub');
+                startHistoryPoll();
+                return true;
+            }
+            setSyncStatus(false);
+            return false;
+        } catch (e) {
+            if (pubnub) {
+                setSyncStatus(true, 'pubnub');
+                startHistoryPoll();
+                return true;
+            }
+            setSyncStatus(false);
+            return false;
+        }
     }
 
     function escapeHtml(s) {
@@ -1238,10 +1619,12 @@
         saveTrip: async (t) => {
             const did = tripDocId(t);
             if (did) t.docId = did;
+            t.updatedAt = Date.now();
             app.upsertLocalTrip(t);
-            if(isReady && did) {
-                const payload = {...t};
-                await setDoc(doc(db, 'trips', did), payload, { merge: true });
+            if (did) {
+                rememberId(did);
+                schedulePublishTrip(t);
+                app.watchTrip(did);
             }
             if(currentTrip && (tripDocId(currentTrip)===did || currentTrip.id===t.id)) {
                 currentTrip=t;
@@ -1274,6 +1657,7 @@
                             themeColor:temp.color||t.themeColor, icon:temp.icon||t.icon
                         });
                         await app.saveTrip(t);
+                        await flushPublishTrip(tripDocId(t), t);
                         app.closeCreateModal();
                         showToast('已儲存');
                     }
@@ -1282,20 +1666,22 @@
                     if (!cid) {
                         for (let n=0;n<8;n++) {
                             cid = generateTripId();
+                            if (app.getTripById(cid)) continue;
                             if (isReady) {
-                                const existing = await getDoc(doc(db, 'trips', cid));
-                                if (!existing.exists()) break;
-                            } else if (!app.getTripById(cid)) break;
-                        }
-                    } else if (isReady) {
-                        const existingDoc = await getDoc(doc(db, 'trips', cid));
-                        if(existingDoc.exists()) {
-                            alert("此編號已存在，請更換一個");
-                            return;
+                                const existing = await fetchLatestTripSnapshot(cid);
+                                if (existing.ok && existing.trip) continue;
+                            }
+                            break;
                         }
                     } else if (app.getTripById(cid)) {
                         alert("此編號已存在，請更換一個");
                         return;
+                    } else if (isReady) {
+                        const existingDoc = await fetchLatestTripSnapshot(cid);
+                        if (existingDoc.ok && existingDoc.trip) {
+                            alert("此編號已存在，請更換一個");
+                            return;
+                        }
                     }
 
                     const newT = {
@@ -1304,14 +1690,12 @@
                         cover:temp.cover||'', bg:temp.bg||'',
                         themeColor:temp.color||'#708090', icon:temp.icon||'✈️', currency:cur,
                         flights:[], spots:[], shoppingList:[], expenses:[], wallets:[], splitItems:[], splitMembers: [], infoCards:[], checklists: [],
-                        docId: cid, customId: cid
+                        docId: cid, customId: cid, updatedAt: Date.now()
                     };
                     rememberId(cid);
-                    if(isReady) {
-                        await setDoc(doc(db, 'trips', cid), newT);
-                        app.watchTrip(cid);
-                    }
-                    app.upsertLocalTrip(newT);
+                    await app.saveTrip(newT);
+                    app.watchTrip(cid);
+                    await flushPublishTrip(cid, newT);
                     app.closeCreateModal();
                     await app.copyTripId(cid);
                     showToast('已建立，旅行編號：' + cid);
@@ -1319,9 +1703,7 @@
                 }
             } catch(e) {
                 console.error(e);
-                alert("儲存失敗，已先保存在此裝置。\n" + (e.message||e));
-                isReady = false;
-                document.getElementById('sync-status').className='offline';
+                alert("儲存失敗，已先保存在此裝置。");
             } finally {
                 btn.innerText = editId ? "儲存" : "建立";
                 btn.disabled = false;
@@ -1337,19 +1719,26 @@
             btn.innerText = '載入中...';
             btn.disabled = true;
             try {
+                rememberId(id);
+                app.watchTrip(id);
+                const result = await fetchLatestTripSnapshot(id);
                 let t = null;
-                if (isReady) {
-                    const snap = await getDoc(doc(db, 'trips', id));
-                    if (snap.exists()) t = { ...snap.data(), docId: id, customId: id };
+                if (result.trip) {
+                    const local = app.getTripById(id);
+                    t = mergeLocalImages(Object.assign({}, result.trip, {
+                        docId: id,
+                        customId: id,
+                        updatedAt: result.ts || result.trip.updatedAt
+                    }), local);
+                    app.upsertLocalTrip(t);
+                } else {
+                    t = app.getTripById(id);
                 }
-                if (!t) t = app.getTripById(id);
                 if (!t) {
+                    forgetId(id);
                     alert('找不到此編號。請確認編號無誤，或檢查網絡後再試。');
                     return;
                 }
-                rememberId(id);
-                app.upsertLocalTrip(t);
-                if (isReady) app.watchTrip(id);
                 app.closeJoinModal();
                 document.getElementById('input-join-id').value = '';
                 showToast('已載入行程：' + (t.title||id));
@@ -1357,7 +1746,7 @@
                 app.openApp(t);
             } catch (e) {
                 console.error(e);
-                alert('加入失敗：' + (e.message||e));
+                alert('找不到此編號。請確認編號無誤，或檢查網絡後再試。');
             } finally {
                 btn.innerText = old;
                 btn.disabled = false;
@@ -1366,22 +1755,28 @@
 
         watchTrip: (id) => {
             const did = normalizeId(id);
-            if (!isReady || !did || tripUnsubs.has(did)) return;
-            const unsub = onSnapshot(doc(db, 'trips', did), (snap) => {
-                if (!snap.exists()) return;
-                const t = { ...snap.data(), docId: did, customId: did };
-                app.upsertLocalTrip(t);
-                if (currentTrip && tripDocId(currentTrip)===did) {
-                    currentTrip = t;
-                    app.refreshView();
+            if (!did) return;
+            if (watchedIds.has(did)) {
+                pollTripHistory(did);
+                return;
+            }
+            watchedIds.add(did);
+            rememberId(did);
+            ensurePubNub().then((pn) => {
+                if (pn) {
+                    try { pn.subscribe({ channels: [cloudChannel(did)] }); } catch (e) {}
                 }
-                app.renderTripList();
-            }, (err) => console.warn('watch failed', did, err));
-            tripUnsubs.set(did, unsub);
+            });
+            pollTripHistory(did);
         },
 
         watchAllKnown: () => {
-            subIds.forEach(id => app.watchTrip(id));
+            const ids = new Set(subIds.map(normalizeId).filter(Boolean));
+            myTrips.forEach((t) => {
+                const id = tripDocId(t);
+                if (id) ids.add(id);
+            });
+            ids.forEach((id) => app.watchTrip(id));
         },
 
         getTripById: (id) => {
@@ -1771,32 +2166,15 @@
         app.initUI();
         app.renderTripList();
 
-        try {
-            const appInit = initializeApp(firebaseConfig);
-            auth = getAuth(appInit);
-            db = getFirestore(appInit);
-            await signInAnonymously(auth);
-            onAuthStateChanged(auth, async (u) => {
-                if(u) {
-                    isReady=true;
-                    document.getElementById('sync-status').className='online';
-                    for (const id of subIds) {
-                        try {
-                            const snap = await getDoc(doc(db, 'trips', id));
-                            if (snap.exists()) app.upsertLocalTrip({ ...snap.data(), docId: id, customId: id });
-                        } catch (e) { console.warn(e); }
-                    }
-                    app.watchAllKnown();
-                    app.renderTripList();
-                    if (currentTrip && tripDocId(currentTrip)) {
-                        const t = app.getTripById(tripDocId(currentTrip));
-                        if (t) { currentTrip = t; app.refreshView(); }
-                    }
-                }
-            });
-        } catch(e) {
-            isReady=false;
-            document.getElementById('sync-status').className='offline';
+        const ok = await initSync();
+        if (ok) {
+            app.watchAllKnown();
+            app.renderTripList();
+            if (currentTrip && tripDocId(currentTrip)) {
+                const t = app.getTripById(tripDocId(currentTrip));
+                if (t) { currentTrip = t; app.refreshView(); }
+            }
+        } else {
             app.renderTripList();
             showToast('離線模式：資料先存在此裝置');
         }
@@ -1804,7 +2182,18 @@
         document.getElementById('input-join-id').addEventListener('keydown', (ev) => {
             if (ev.key === 'Enter') app.joinTrip();
         });
-        document.addEventListener('visibilitychange', () => { if(!document.hidden) app.refreshView(); });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                watchedIds.forEach((id) => pollTripHistory(id));
+                app.refreshView();
+            }
+        });
+        window.addEventListener('online', () => {
+            initSync().then((ready) => {
+                if (ready) app.watchAllKnown();
+            });
+        });
+        window.addEventListener('offline', () => setSyncStatus(false));
     })();
 </script>
 </body>
