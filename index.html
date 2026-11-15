@@ -1545,15 +1545,34 @@
         openConfirmModal: (msg, action) => {
             document.getElementById('confirm-msg').innerText = msg;
             app.pendingDelete = action;
+            app.pendingCancel = null;
             document.getElementById('confirm-modal').classList.add('active');
         },
+        confirmAsync: (msg) => new Promise((resolve) => {
+            let settled = false;
+            const finish = (v) => {
+                if (settled) return;
+                settled = true;
+                resolve(v);
+            };
+            document.getElementById('confirm-msg').innerText = msg;
+            app.pendingDelete = () => finish(true);
+            app.pendingCancel = () => finish(false);
+            document.getElementById('confirm-modal').classList.add('active');
+        }),
         closeConfirmModal: () => {
-            document.getElementById('confirm-modal').classList.remove('active');
+            const cancel = app.pendingCancel;
             app.pendingDelete = null;
+            app.pendingCancel = null;
+            document.getElementById('confirm-modal').classList.remove('active');
+            if (cancel) cancel();
         },
         confirmAction: () => {
-            if (app.pendingDelete) app.pendingDelete();
-            app.closeConfirmModal();
+            const ok = app.pendingDelete;
+            app.pendingDelete = null;
+            app.pendingCancel = null;
+            document.getElementById('confirm-modal').classList.remove('active');
+            if (ok) ok();
         },
         openAddExpenseModal: (id) => {
             if(!currentTrip.wallets?.length) return alert("請先建立錢包");
@@ -1731,14 +1750,18 @@
                             }
                             break;
                         }
-                    } else if (app.getTripById(cid)) {
-                        alert("此編號已存在，請更換一個");
-                        return;
-                    } else if (isReady) {
-                        const existingDoc = await fetchLatestTripSnapshot(cid);
-                        if (existingDoc.ok && existingDoc.trip) {
-                            alert("此編號已存在，請更換一個");
-                            return;
+                    } else {
+                        const localExisting = app.getTripById(cid);
+                        let cloudTrip = null;
+                        if (isReady) {
+                            const existingDoc = await fetchLatestTripSnapshot(cid);
+                            if (existingDoc.ok && existingDoc.trip && !existingDoc.deleted) cloudTrip = existingDoc.trip;
+                        }
+                        if (localExisting || cloudTrip) {
+                            const oldTitle = (localExisting && localExisting.title) || (cloudTrip && cloudTrip.title) || cid;
+                            const reuse = await app.confirmAsync('此編號已有行程「' + oldTitle + '」。要覆蓋舊行程並重新使用呢個編號嗎？');
+                            if (!reuse) return;
+                            removeLocalTrip(cid);
                         }
                     }
 
