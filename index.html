@@ -721,6 +721,18 @@
         if (!payload || typeof payload !== 'object') return null;
         const msg = (payload.message && payload.type == null) ? payload.message : payload;
         if (!msg || typeof msg !== 'object') return null;
+        const tripIdHint = normalizeId(msg.tripId || (msg.trip && (msg.trip.docId || msg.trip.customId)));
+        if (msg.type === 'deleted' || msg.deleted === true) {
+            if (!tripIdHint) return null;
+            return {
+                type: 'deleted',
+                deleted: true,
+                ts: Number(msg.ts || 0) || 0,
+                tripId: tripIdHint,
+                sender: msg.sender || '',
+                trip: null
+            };
+        }
         if (msg.type && msg.type !== 'trip') return null;
         const trip = msg.trip || ((msg.title && (msg.docId || msg.customId)) ? msg : null);
         if (!trip || typeof trip !== 'object') return null;
@@ -735,15 +747,34 @@
         };
     }
 
+    function removeLocalTrip(did) {
+        const id = normalizeId(did);
+        if (!id) return;
+        forgetId(id);
+        myTrips = myTrips.filter(x => tripDocId(x) !== id && String(x.id) !== id);
+        allCache = allCache.filter(x => tripDocId(x) !== id);
+        try { localStorage.setItem('trips', JSON.stringify(myTrips)); } catch (err) {}
+        if (currentTrip && (tripDocId(currentTrip) === id || String(currentTrip.id) === id)) {
+            currentTrip = null;
+            if (app && app.goHome) app.goHome();
+        }
+        if (app && app.renderTripList) app.renderTripList();
+    }
+
     function applyRemoteTrip(msg) {
-        if (!msg || !msg.trip) return;
+        if (!msg) return;
         const did = normalizeId(msg.tripId);
         if (!did) return;
         const local = app.getTripById(did);
-        if (msg.sender && msg.sender === DEVICE_UUID && local && localTripTs(local)) return;
         const incomingTs = Number(msg.ts || 0) || localTripTs(msg.trip);
         const currentTs = localTripTs(local);
         if (local && incomingTs <= currentTs) return;
+        if (msg.type === 'deleted' || msg.deleted) {
+            removeLocalTrip(did);
+            return;
+        }
+        if (!msg.trip) return;
+        if (msg.sender && msg.sender === DEVICE_UUID && local && localTripTs(local)) return;
         let t = Object.assign({}, msg.trip, {
             docId: did,
             customId: did,
@@ -864,6 +895,27 @@
         return publishTripSnapshot(did, t);
     }
 
+    async function publishTripDeleted(did, ts) {
+        const id = normalizeId(did);
+        if (!id) return false;
+        if (publishTimers.has(id)) {
+            clearTimeout(publishTimers.get(id));
+            publishTimers.delete(id);
+        }
+        const envelope = {
+            type: 'deleted',
+            deleted: true,
+            ts: Number(ts) || Date.now(),
+            tripId: id,
+            sender: DEVICE_UUID
+        };
+        let ok = false;
+        try { ok = await publishCloudReliable(id, envelope); }
+        catch (e) { console.warn(e); ok = false; }
+        if (ok) setSyncStatus(true, syncBackend || (pubnub ? 'pubnub' : 'rest'));
+        return ok;
+    }
+
     async function loadHistory(tripId) {
         const channel = cloudChannel(tripId);
         const url = PUBNUB_REST_ORIGIN + '/v2/history/sub-key/' + PUBNUB_SUBSCRIBE_KEY +
@@ -884,19 +936,21 @@
     async function fetchLatestTripSnapshot(tripId) {
         try {
             const res = await loadHistory(tripId);
-            if (!res.ok) return { ok: false, trip: null, ts: 0, sender: '' };
+            if (!res.ok) return { ok: false, trip: null, deleted: false, ts: 0, sender: '' };
             let latest = null;
             res.messages.forEach((msg) => {
                 if (!latest || (msg.ts || 0) >= (latest.ts || 0)) latest = msg;
             });
+            const deleted = !!(latest && (latest.type === 'deleted' || latest.deleted));
             return {
                 ok: true,
-                trip: latest && latest.trip,
+                trip: (!deleted && latest && latest.trip) ? latest.trip : null,
+                deleted,
                 ts: (latest && latest.ts) || 0,
                 sender: (latest && latest.sender) || ''
             };
         } catch (e) {
-            return { ok: false, trip: null, ts: 0, sender: '' };
+            return { ok: false, trip: null, deleted: false, ts: 0, sender: '' };
         }
     }
 
@@ -904,7 +958,11 @@
         try {
             const res = await loadHistory(tripId);
             if (!res.ok) return false;
-            res.messages.forEach((msg) => applyRemoteTrip(msg));
+            let latest = null;
+            res.messages.forEach((msg) => {
+                if (!latest || (msg.ts || 0) >= (latest.ts || 0)) latest = msg;
+            });
+            if (latest) applyRemoteTrip(latest);
             if (!isReady) setSyncStatus(true, syncBackend || 'rest');
             return true;
         } catch (e) {
@@ -1723,6 +1781,11 @@
                 app.watchTrip(id);
                 const result = await fetchLatestTripSnapshot(id);
                 let t = null;
+                if (result.deleted) {
+                    removeLocalTrip(id);
+                    alert('找不到此編號。請確認編號無誤，或檢查網絡後再試。');
+                    return;
+                }
                 if (result.trip) {
                     const local = app.getTripById(id);
                     t = mergeLocalImages(Object.assign({}, result.trip, {
@@ -1988,13 +2051,12 @@
             e.stopPropagation();
             const t = app.getTripById(id);
             if(!t) return;
-            app.openConfirmModal("確定移除此旅行？（只係喺呢部裝置隱藏，雲端資料會保留，之後可用編號再加入）", () => {
+            app.openConfirmModal("確定刪除此旅行？刪除後呢個編號可以重新使用，其他裝置亦會移除呢個行程。", () => {
                 const did = tripDocId(t) || String(t.id);
-                forgetId(did);
-                myTrips = myTrips.filter(x => tripDocId(x) !== did && String(x.id) !== String(t.id));
-                allCache = allCache.filter(x => tripDocId(x) !== did);
-                try { localStorage.setItem('trips', JSON.stringify(myTrips)); } catch(err){}
-                app.renderTripList();
+                const ts = Math.max(Date.now(), localTripTs(t) + 1);
+                removeLocalTrip(did);
+                showToast('已刪除，編號可重新使用');
+                publishTripDeleted(did, ts);
             });
         },
         openEditTripModal: (e, id) => {
